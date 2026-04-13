@@ -103,7 +103,7 @@ class VacancyService:
         
         try:
             url = f"https://hh.ru/vacancy/{vacancy_id}"
-            await page_obj.goto(url, wait_until="networkidle", timeout=30000)
+            await page_obj.goto(url, wait_until="domcontentloaded", timeout=60000)
             
             vacancy = await VacancyParser.parse_vacancy_detail(page_obj)
             
@@ -129,7 +129,7 @@ class VacancyService:
         
         try:
             url = f"https://hh.ru/vacancy/{vacancy_id}/similar"
-            await page_obj.goto(url, wait_until="networkidle", timeout=30000)
+            await page_obj.goto(url, wait_until="domcontentloaded", timeout=60000)
             
             return await VacancyParser.parse_search_results(page_obj)
         except Exception as e:
@@ -149,7 +149,7 @@ class VacancyService:
         
         try:
             url = f"https://hh.ru/employer/{employer_id}"
-            await page_obj.goto(url, wait_until="networkidle", timeout=30000)
+            await page_obj.goto(url, wait_until="domcontentloaded", timeout=60000)
             
             # Парсим информацию о компании
             name_el = page_obj.locator('[data-qa="employer-name"]')

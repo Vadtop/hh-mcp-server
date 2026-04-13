@@ -20,7 +20,7 @@ from src.config import (
     APP_NAME,
     APP_VERSION,
     APP_DESCRIPTION,
-    OPENAI_API_KEY,
+    OPENROUTER_API_KEY,
     AI_MODEL,
 )
 from src.browser.engine import BrowserEngine
@@ -32,6 +32,7 @@ from src.ai.scorer import AIVacancyScorer
 from src.ai.letter_gen import LetterGenerator
 from src.ai.market_analyzer import MarketAnalyzer
 from src.ai.career_advisor import CareerAdvisor
+from src.services.monitor import MonitorService
 
 # Логирование
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(name)s: %(message)s")
@@ -49,6 +50,7 @@ _ai_scorer: Optional[AIVacancyScorer] = None
 _letter_gen: Optional[LetterGenerator] = None
 _market_analyzer: Optional[MarketAnalyzer] = None
 _career_advisor: Optional[CareerAdvisor] = None
+_monitor: Optional[MonitorService] = None
 
 
 def get_browser() -> BrowserEngine:
@@ -89,7 +91,7 @@ def get_ai_scorer() -> AIVacancyScorer:
 def get_letter_gen() -> LetterGenerator:
     global _letter_gen
     if _letter_gen is None:
-        _letter_gen = LetterGenerator(openai_api_key=OPENAI_API_KEY, model=AI_MODEL)
+        _letter_gen = LetterGenerator(openrouter_api_key=OPENROUTER_API_KEY, model=AI_MODEL)
     return _letter_gen
 
 
@@ -105,6 +107,13 @@ def get_career_advisor() -> CareerAdvisor:
     if _career_advisor is None:
         _career_advisor = CareerAdvisor()
     return _career_advisor
+
+
+def get_monitor(interval: int = 300) -> MonitorService:
+    global _monitor
+    if _monitor is None:
+        _monitor = MonitorService(apply_service=get_apply_service(), interval=interval)
+    return _monitor
 
 
 # ============================================================================
@@ -404,30 +413,42 @@ async def hh_apply_vacancy(
     cover_letter: Optional[str] = None,
 ) -> str:
     """
-    Откликнуться на вакансию.
-    
+    Откликнуться на вакансию. Если вакансия требует письмо — генерирует автоматически.
+
     Args:
         vacancy_id: ID вакансии
-        cover_letter: Сопроводительное письмо
-    
+        cover_letter: Сопроводительное письмо (если не передано — сгенерируется через AI)
+
     Returns:
         Результат отклика
     """
     service = get_apply_service()
     result = await service.apply(vacancy_id, cover_letter)
-    
+
+    # Вакансия требует письмо — генерируем и повторяем
+    if result.get("needs_letter") and not cover_letter:
+        logger.info(f"Вакансия {vacancy_id} требует письмо — генерируем через AI")
+        try:
+            vacancy_service = get_vacancy_service()
+            vacancy = await vacancy_service.get_vacancy(vacancy_id)
+            letter_gen = get_letter_gen()
+            cover_letter = await letter_gen.generate_letter(vacancy=vacancy)
+            # Повторяем отклик с письмом
+            result = await service.apply(vacancy_id, cover_letter)
+        except Exception as e:
+            return f"❌ Не удалось сгенерировать письмо: {e}"
+
     if "error" in result:
         return f"❌ Ошибка: {result['error']}"
-    
+
     lines = [
         "✅ Отклик отправлен!",
         "",
         f"📌 Вакансия: {vacancy_id}",
     ]
-    
     if cover_letter:
-        lines.append(f"📝 Письмо: {cover_letter[:100]}...")
-    
+        lines.append(f"📝 Письмо: {cover_letter[:120]}...")
+
     return "\n".join(lines)
 
 
@@ -490,8 +511,8 @@ async def hh_score_vacancy(
         return f"❌ Ошибка: {vacancy['error']}"
     
     scorer = get_ai_scorer()
-    scored = await scorer.score_vacancy(vacancy)
-    
+    scored = scorer.score_vacancy(vacancy, expected_salary=expected_salary)
+
     lines = [
         f"📊 AI Скоринг: {vacancy.get('title', '')}",
         f"{'='*50}",
@@ -499,13 +520,12 @@ async def hh_score_vacancy(
         f"🎯 Score: {scored.score}/100 — {scored.score_comment}",
         f"",
     ]
-    
+
     if scored.score_details:
-        lines.append("Детали:")
+        lines.append("📋 Детали:")
         for key, value in scored.score_details.items():
-            score = value.get("score", value)
-            lines.append(f"   • {key}: {score}")
-    
+            lines.append(f"   • {key}: {value}")
+
     return "\n".join(lines)
 
 
@@ -539,55 +559,78 @@ async def hh_generate_letter(
 
 
 @mcp.tool()
-async def hh_market_analytics(text: str = "Python разработчик") -> str:
+async def hh_market_analytics(text: str = "AI разработчик") -> str:
     """
     Проанализировать рынок труда по запросу.
-    
+
     Args:
         text: Поисковый запрос (должность)
-    
+
     Returns:
-        Аналитика рынка
+        Аналитика: зарплаты, топ навыки, топ компании, требования к опыту
     """
+    from src.ai.scorer import _parse_salary_string
+    from collections import Counter
+
     vacancy_service = get_vacancy_service()
     result = await vacancy_service.search(text=text, per_page=20)
-    
+
     if "error" in result:
         return f"❌ Ошибка: {result['error']}"
-    
+
     vacancies = result.get("vacancies", [])
-    
     if not vacancies:
-        return "❌ Нет данных для анализа"
-    
-    analyzer = get_market_analyzer()
-    
-    # Простая аналитика
-    salaries = []
-    companies = []
+        return f"❌ По запросу '{text}' вакансий не найдено"
+
+    # Собираем данные
+    salaries_from, salaries_to = [], []
+    companies = Counter()
+    skills_counter = Counter()
+    remote_count = 0
+
     for v in vacancies:
-        if v.get('salary'):
-            salaries.append(v['salary'])
-        if v.get('company'):
-            companies.append(v['company'])
-    
+        salary_str = v.get("salary", "") or ""
+        f, t = _parse_salary_string(salary_str)
+        if f:
+            salaries_from.append(f)
+        if t:
+            salaries_to.append(t)
+        if v.get("company"):
+            companies[v["company"]] += 1
+        for s in v.get("skills", []):
+            skills_counter[s.lower()] += 1
+        if v.get("remote"):
+            remote_count += 1
+
+    total = len(vacancies)
     lines = [
         f"📊 Анализ рынка: {text}",
         f"{'='*50}",
-        f"📈 Найдено: {len(vacancies)} вакансий",
-        f"",
-        f"💰 Зарплаты:",
+        f"📈 Вакансий: {total} | 🏠 Удалённых: {remote_count} ({round(remote_count/total*100)}%)",
+        "",
     ]
-    
-    for s in salaries[:5]:
-        lines.append(f"   • {s}")
-    
-    lines.append("")
-    lines.append(f"🏢 Топ компании:")
-    from collections import Counter
-    for company, count in Counter(companies).most_common(5):
-        lines.append(f"   • {company}")
-    
+
+    # Зарплаты
+    lines.append("💰 Зарплаты:")
+    if salaries_from:
+        lines.append(f"   От: мин {min(salaries_from):,} / средн {sum(salaries_from)//len(salaries_from):,} / макс {max(salaries_from):,} ₽")
+    if salaries_to:
+        lines.append(f"   До: мин {min(salaries_to):,} / средн {sum(salaries_to)//len(salaries_to):,} / макс {max(salaries_to):,} ₽")
+    if not salaries_from and not salaries_to:
+        lines.append("   Зарплата не указана в большинстве вакансий")
+
+    # Топ навыки
+    if skills_counter:
+        lines += ["", "🔧 Топ-10 навыков:"]
+        for skill, count in skills_counter.most_common(10):
+            lines.append(f"   • {skill.title()} — {round(count/total*100)}%")
+
+    # Топ компании
+    if companies:
+        lines += ["", "🏢 Топ компании:"]
+        for company, count in companies.most_common(5):
+            lines.append(f"   • {company} ({count})")
+
     return "\n".join(lines)
 
 
@@ -595,143 +638,287 @@ async def hh_market_analytics(text: str = "Python разработчик") -> st
 async def hh_start_monitor(interval: int = 300) -> str:
     """
     Запустить мониторинг ответов на отклики.
-    
+
+    Периодически проверяет статусы откликов на hh.ru и уведомляет
+    об изменениях (Console + Telegram если настроен TELEGRAM_BOT_TOKEN).
+
     Args:
-        interval: Интервал проверки в секундах
-    
+        interval: Интервал проверки в секундах (по умолчанию 300 = 5 мин)
+
     Returns:
-        Статус мониторинга
+        Статус запуска
     """
-    return (
-        f"✅ Мониторинг настроен!\n"
-        f"📊 Интервал проверки: {interval} сек\n"
-        f"🔔 Уведомления: Console"
-    )
+    monitor = get_monitor(interval=interval)
+    return await monitor.start()
 
 
 @mcp.tool()
-async def hh_career_advisor(resume_id: str, vacancy_text: str = "Python разработчик") -> str:
+async def hh_stop_monitor() -> str:
+    """
+    Остановить мониторинг откликов.
+
+    Returns:
+        Статус остановки
+    """
+    monitor = get_monitor()
+    return await monitor.stop()
+
+
+@mcp.tool()
+async def hh_check_monitor() -> str:
+    """
+    Разово проверить изменения статусов откликов (без запуска фонового цикла).
+
+    Returns:
+        Список изменений или "Изменений нет"
+    """
+    monitor = get_monitor()
+    return await monitor.check_now()
+
+
+@mcp.tool()
+async def hh_career_advisor(resume_id: str, vacancy_text: str = "AI разработчик") -> str:
     """
     AI Карьерный советник — анализ резюме vs целевые вакансии.
-    
+
     Args:
         resume_id: ID резюме
         vacancy_text: Текст поиска целевых вакансий
-    
+
     Returns:
-        Полный карьерный отчёт
+        Полный карьерный отчёт: пробелы, дорожная карта, прогноз зарплаты
     """
+    from src.config import MY_SKILLS, MY_EXPECTED_SALARY
+
     resume_service = get_resume_service()
     resume = await resume_service.get_resume(resume_id)
-    
+
     if "error" in resume:
         return f"❌ Ошибка: {resume['error']}"
-    
+
     vacancy_service = get_vacancy_service()
     result = await vacancy_service.search(text=vacancy_text, per_page=20)
-    
     vacancies = result.get("vacancies", [])
-    
+
     advisor = get_career_advisor()
-    
-    # Простой анализ навыков
-    resume_skills = resume.get('skills', [])
-    
+
+    # Навыки из резюме + дополняем MY_SKILLS
+    resume_skills = resume.get("skills", [])
+    all_skills = list(set(resume_skills + MY_SKILLS))
+
+    # Собираем навыки из вакансий
+    from collections import Counter
+    vacancy_skills_counter = Counter()
+    for v in vacancies:
+        for s in v.get("skills", []):
+            vacancy_skills_counter[s.lower()] += 1
+
+    total = len(vacancies) or 1
+    my_skills_lower = set(s.lower() for s in all_skills)
+
+    matched = [(s, c) for s, c in vacancy_skills_counter.most_common(30) if s in my_skills_lower]
+    missing = [(s, c) for s, c in vacancy_skills_counter.most_common(30) if s not in my_skills_lower]
+
     lines = [
-        f"🎯 AI Карьерный советник",
-        f"{'='*60}",
-        f"",
-        f"👤 {resume.get('title', '')}",
-        f"📅 Опыт: {len(resume.get('experience', []))} мест",
-        f"",
-        f"🔧 Ваши навыки ({len(resume_skills)}):",
+        "🎯 AI Карьерный советник",
+        "=" * 60,
+        "",
+        f"👤 {resume.get('title', vacancy_text)}",
+        f"📅 Опыт: {len(resume.get('experience', []))} мест работы",
+        f"🔍 Вакансий проанализировано: {len(vacancies)}",
+        "",
+        f"✅ Ваши навыки совпадают ({len(matched)}):",
     ]
-    
-    for skill in resume_skills[:10]:
-        lines.append(f"   • {skill}")
-    
-    lines.append("")
-    lines.append(f"💡 Рекомендации:")
-    lines.append(f"   1. Изучить Docker + K8s")
-    lines.append(f"   2. Добавить pet-проект на GitHub")
-    lines.append(f"   3. Прочитать 'Designing Data-Intensive Applications'")
-    
+    for skill, count in matched[:8]:
+        pct = round(count / total * 100)
+        lines.append(f"   • {skill.title()} — в {pct}% вакансий")
+
+    lines += ["", f"⚠️ Навыки которых не хватает ({len(missing)}):"]
+    for skill, count in missing[:8]:
+        pct = round(count / total * 100)
+        bonus = advisor.skill_salary_bonuses.get(skill, 0)
+        bonus_str = f" | +{bonus:,} ₽" if bonus else ""
+        lines.append(f"   • {skill.title()} — в {pct}% вакансий{bonus_str}")
+
+    # Прогноз зарплаты по топ-5 missing
+    top_missing_skills = [s for s, _ in missing[:5]]
+    if top_missing_skills:
+        forecast = advisor.forecast_salary(
+            current_salary=MY_EXPECTED_SALARY,
+            current_skills=all_skills,
+            target_skills=top_missing_skills,
+            timeline_months=6,
+        )
+        if "error" not in forecast:
+            lines += [
+                "",
+                "💰 Прогноз зарплаты (если освоить топ-5 недостающих):",
+                f"   Сейчас: {forecast['current_salary']:,} ₽",
+                f"   Потенциал: {forecast['forecast_salary']:,} ₽ (+{forecast['growth_percentage']}%)",
+            ]
+
     return "\n".join(lines)
 
 
 @mcp.tool()
-async def hh_skills_gap(resume_id: str, vacancy_text: str = "Python разработчик") -> str:
+async def hh_skills_gap(resume_id: str, vacancy_text: str = "AI разработчик") -> str:
     """
-    Анализ пробелов в навыках.
-    
+    Анализ пробелов в навыках — резюме vs реальные вакансии.
+
     Args:
         resume_id: ID резюме
-        vacancy_text: Текст поиска вакансий
-    
+        vacancy_text: Текст поиска вакансий для сравнения
+
     Returns:
-        Анализ навыков
+        Топ навыков которых не хватает + которые уже есть
     """
+    from src.config import MY_SKILLS
+    from collections import Counter
+
     resume_service = get_resume_service()
     resume = await resume_service.get_resume(resume_id)
-    
+
     if "error" in resume:
         return f"❌ Ошибка: {resume['error']}"
-    
+
     vacancy_service = get_vacancy_service()
     result = await vacancy_service.search(text=vacancy_text, per_page=20)
-    
-    resume_skills = resume.get('skills', [])
-    
+    vacancies = result.get("vacancies", [])
+
+    if not vacancies:
+        return f"❌ Вакансии по запросу '{vacancy_text}' не найдены"
+
+    # Объединяем навыки резюме + MY_SKILLS (из .env)
+    resume_skills = resume.get("skills", [])
+    my_skills_lower = set(s.lower() for s in resume_skills + MY_SKILLS)
+
+    # Считаем навыки по вакансиям
+    counter = Counter()
+    for v in vacancies:
+        for s in v.get("skills", []):
+            counter[s.lower()] += 1
+
+    total = len(vacancies)
+    matched = [(s, c) for s, c in counter.most_common(40) if s in my_skills_lower]
+    missing = [(s, c) for s, c in counter.most_common(40) if s not in my_skills_lower]
+
+    match_pct = round(len(matched) / max(len(counter), 1) * 100)
+
     lines = [
-        f"🔧 Анализ навыков",
+        f"🔧 Анализ пробелов в навыках",
         f"{'='*50}",
-        f"",
-        f"✅ Ваши навыки ({len(resume_skills)}):",
+        f"🔍 Запрос: {vacancy_text} ({total} вакансий)",
+        f"📊 Покрытие навыков: {match_pct}%",
+        "",
+        f"✅ Есть ({len(matched)}):",
     ]
-    
-    for skill in resume_skills[:10]:
-        lines.append(f"   • {skill}")
-    
-    lines.append("")
-    lines.append(f"⚠️ Рекомендую изучить:")
-    lines.append(f"   • Kubernetes")
-    lines.append(f"   • Docker")
-    lines.append(f"   • System Design")
-    lines.append(f"   • CI/CD")
-    
+    for skill, count in matched[:10]:
+        lines.append(f"   • {skill.title()} — {round(count/total*100)}% вакансий")
+
+    lines += ["", f"❌ Не хватает ({len(missing)}):"]
+    advisor = get_career_advisor()
+    for skill, count in missing[:10]:
+        pct = round(count / total * 100)
+        tip = advisor.learning_recommendations.get(skill, "")
+        tip_str = f"\n     → {tip}" if tip else ""
+        lines.append(f"   • {skill.title()} — {pct}% вакансий{tip_str}")
+
     return "\n".join(lines)
 
 
 @mcp.tool()
-async def hh_resume_optimizer(resume_id: str) -> str:
+async def hh_resume_optimizer(resume_id: str, vacancy_text: str = "AI разработчик") -> str:
     """
-    Оптимизировать резюме.
-    
+    Оптимизировать резюме — конкретные рекомендации на основе реальных вакансий.
+
     Args:
         resume_id: ID резюме
-    
+        vacancy_text: Целевые вакансии для сравнения
+
     Returns:
-        Рекомендации по улучшению
+        Конкретные рекомендации по улучшению резюме
     """
+    from src.config import MY_SKILLS, MY_GITHUB
+    from collections import Counter
+
     resume_service = get_resume_service()
     resume = await resume_service.get_resume(resume_id)
-    
+
     if "error" in resume:
         return f"❌ Ошибка: {resume['error']}"
-    
+
+    vacancy_service = get_vacancy_service()
+    result = await vacancy_service.search(text=vacancy_text, per_page=20)
+    vacancies = result.get("vacancies", [])
+
+    resume_skills = resume.get("skills", [])
+    my_skills_lower = set(s.lower() for s in resume_skills + MY_SKILLS)
+
+    counter = Counter()
+    for v in vacancies:
+        for s in v.get("skills", []):
+            counter[s.lower()] += 1
+
+    total = len(vacancies) or 1
+    # Топ-5 навыков из вакансий которых нет в резюме
+    critical_missing = [
+        s for s, _ in counter.most_common(20) if s not in my_skills_lower
+    ][:5]
+
     lines = [
-        f"📝 Оптимизация резюме",
-        f"{'='*50}",
-        f"",
+        "📝 Оптимизация резюме",
+        "=" * 50,
+        "",
         f"👤 {resume.get('title', '')}",
-        f"",
-        f"💡 Рекомендации:",
-        f"   1. Добавить метрики в опыт работы",
-        f"   2. Расширить раздел 'О себе'",
-        f"   3. Добавить 2-3 pet-проекта на GitHub",
-        f"   4. Изучить и добавить: Docker, K8s, CI/CD",
+        f"🔧 Навыков в резюме: {len(resume_skills)}",
+        f"🔍 Сравнение с: {len(vacancies)} вакансиями '{vacancy_text}'",
+        "",
+        "💡 Конкретные рекомендации:",
     ]
-    
+
+    n = 1
+
+    # 1. Навыки которых не хватает
+    if critical_missing:
+        lines.append(f"   {n}. Добавить в навыки резюме:")
+        for s in critical_missing:
+            pct = round(counter[s] / total * 100)
+            lines.append(f"      • {s.title()} (требуется в {pct}% вакансий)")
+        n += 1
+
+    # 2. Раздел "О себе"
+    about = resume.get("about", "") or ""
+    if len(about) < 200:
+        lines.append(
+            f"   {n}. Раздел 'О себе' слишком короткий ({len(about)} симв). "
+            "Опишите специализацию, проекты, подход к работе. Цель: 300-500 символов."
+        )
+        n += 1
+
+    # 3. GitHub
+    if MY_GITHUB and MY_GITHUB not in about:
+        lines.append(f"   {n}. Добавьте ссылку на GitHub ({MY_GITHUB}) в раздел 'О себе' или контакты")
+        n += 1
+
+    # 4. Метрики в опыте
+    experience = resume.get("experience", [])
+    short_exp = [e for e in experience if len(str(e)) < 150]
+    if short_exp:
+        lines.append(
+            f"   {n}. В {len(short_exp)} местах работы описание слишком короткое — "
+            "добавьте конкретные результаты: объём данных, кол-во запросов, % улучшений"
+        )
+        n += 1
+
+    # 5. Зарплата
+    salary = resume.get("salary")
+    if not salary:
+        lines.append(f"   {n}. Укажите желаемую зарплату — вакансии лучше матчатся")
+        n += 1
+
+    if n == 1:
+        lines.append("   ✅ Резюме выглядит хорошо по формальным критериям!")
+
     return "\n".join(lines)
 
 

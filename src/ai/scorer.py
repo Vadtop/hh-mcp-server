@@ -16,7 +16,7 @@ from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.metrics.pairwise import cosine_similarity
 
 from src.models.vacancy import VacancyDetail, VacancyScored
-from src.config import SCORING_WEIGHTS
+from src.config import SCORING_WEIGHTS, MY_SKILLS, MY_RESUME_TEXT, MY_EXPECTED_SALARY
 
 
 class AIVacancyScorer:
@@ -38,6 +38,75 @@ class AIVacancyScorer:
             max_features=1000,
         )
     
+    def score_vacancy(
+        self,
+        vacancy: dict,
+        expected_salary: Optional[int] = None,
+    ) -> "VacancyScoredSimple":
+        """
+        Скоринг вакансии под MY_PROFILE (без резюме объекта).
+
+        Принимает dict из get_vacancy(), использует MY_SKILLS и MY_RESUME_TEXT
+        из конфига как дефолтный профиль.
+
+        Args:
+            vacancy: dict из VacancyService.get_vacancy()
+            expected_salary: переопределить ожидаемую зарплату
+
+        Returns:
+            VacancyScoredSimple с полями score, score_comment, score_details
+        """
+        salary = expected_salary or MY_EXPECTED_SALARY
+
+        # Навыки вакансии
+        vacancy_skills = vacancy.get("skills", [])
+        vacancy_description = vacancy.get("description", "") or ""
+
+        # 1. TF-IDF описание vs мой профиль
+        tfidf_score = self._calculate_tfidf_similarity(MY_RESUME_TEXT, vacancy_description)
+        # Если описание не распарсилось — не тянем скор вниз
+        if tfidf_score < 10:
+            tfidf_score = 50.0
+
+        # 2. Совпадение навыков
+        skills_score = self._calculate_skills_score(MY_SKILLS, vacancy_skills)
+
+        # 3. Зарплата — парсим строку вроде "от 100 000 до 200 000 ₽"
+        from_amount, to_amount = _parse_salary_string(vacancy.get("salary", ""))
+        salary_score = self._calculate_salary_score(salary, from_amount, to_amount)
+
+        # 4. Бонус за формат (удалёнка)
+        remote_bonus = 80.0 if vacancy.get("remote") or "удалённ" in vacancy_description.lower() else 60.0
+
+        # Адаптивные веса: если есть skills — упираемся на них,
+        # если только текст описания — на TF-IDF
+        if vacancy_skills:
+            w_skills = 0.50
+            w_tfidf = 0.15
+        else:
+            w_skills = 0.15
+            w_tfidf = 0.50
+
+        total = (
+            tfidf_score * w_tfidf
+            + skills_score * w_skills
+            + salary_score * SCORING_WEIGHTS["salary_match"]
+            + remote_bonus * SCORING_WEIGHTS["location_match"]
+        )
+
+        final_score = min(100, max(0, int(total)))
+
+        return VacancyScoredSimple(
+            score=final_score,
+            score_comment=self._interpret_score(final_score),
+            score_details={
+                "tfidf_similarity": round(tfidf_score, 1),
+                "skills_match": round(skills_score, 1),
+                "salary_match": round(salary_score, 1),
+                "remote_bonus": round(remote_bonus, 1),
+            },
+        )
+
     def score_with_resume(
         self,
         vacancy: VacancyDetail,
@@ -285,3 +354,41 @@ class AIVacancyScorer:
             return "⚠️ Низкое совпадение. Проверьте требования."
         else:
             return "❌ Слабое совпадение. Вероятно не подходит."
+
+
+class VacancyScoredSimple:
+    """Простой результат скоринга (без Pydantic модели)."""
+
+    def __init__(self, score: int, score_comment: str, score_details: dict):
+        self.score = score
+        self.score_comment = score_comment
+        self.score_details = score_details
+
+
+def _parse_salary_string(salary_str: str) -> tuple[Optional[int], Optional[int]]:
+    """
+    Парсит строку зарплаты вида 'от 100 000 до 200 000 ₽' или '150 000 ₽'.
+
+    Returns:
+        (from_amount, to_amount) — None если не найдено
+    """
+    if not salary_str:
+        return None, None
+
+    numbers = re.findall(r"\d[\d\s]*\d|\d+", salary_str.replace("\u202f", "").replace("\xa0", ""))
+    cleaned = []
+    for n in numbers:
+        try:
+            cleaned.append(int(n.replace(" ", "")))
+        except ValueError:
+            pass
+
+    if len(cleaned) == 0:
+        return None, None
+    elif len(cleaned) == 1:
+        if "от" in salary_str:
+            return cleaned[0], None
+        else:
+            return None, cleaned[0]
+    else:
+        return cleaned[0], cleaned[1]

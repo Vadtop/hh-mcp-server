@@ -14,29 +14,53 @@ from datetime import datetime
 
 from src.models.vacancy import VacancyDetail
 from src.models.resume import ResumeDetail
+from src.config import MY_RESUME_TEXT, MY_SKILLS, MY_GITHUB, MY_TELEGRAM, MY_NAME
 
 logger = logging.getLogger(__name__)
+
+
+def _build_profile_prompt() -> str:
+    """Строит системный промпт из конфига (не хардкод — данные в .env)."""
+    github_line = f"**GitHub:** {MY_GITHUB}" if MY_GITHUB else ""
+    telegram_line = f"**Telegram:** {MY_TELEGRAM}" if MY_TELEGRAM else ""
+    contacts = "\n".join(filter(None, [github_line, telegram_line]))
+
+    return f"""Ты пишешь сопроводительные письма от имени кандидата.
+
+**Профиль кандидата:**
+{MY_RESUME_TEXT}
+{contacts}
+
+Письмо должно быть:
+- Кратким (150-200 слов)
+- Конкретным — ссылаться на реальные проекты кандидата
+- Показывать связь между опытом кандидата и требованиями вакансии
+- На русском языке
+- Без воды и общих фраз
+- Завершаться призывом обсудить детали"""
 
 
 class LetterGenerator:
     """
     Генератор сопроводительных писем.
-    
+
     Поддерживает два режима:
-    1. LLM (OpenAI) — генерация через AI
-    2. Template-based — генерация из шаблонов (без API ключа)
+    1. LLM (OpenRouter) — генерация через AI, всегда персональная
+    2. Template-based — fallback без API ключа
     """
-    
-    def __init__(self, openai_api_key: Optional[str] = None, model: str = "gpt-3.5-turbo"):
-        self.openai_api_key = openai_api_key
+
+    def __init__(self, openrouter_api_key: Optional[str] = None, model: str = "google/gemini-flash-1.5"):
         self.model = model
         self._client = None
-        
-        if openai_api_key:
+
+        if openrouter_api_key:
             try:
                 from openai import OpenAI
-                self._client = OpenAI(api_key=openai_api_key)
-                logger.info("OpenAI клиент инициализирован")
+                self._client = OpenAI(
+                    api_key=openrouter_api_key,
+                    base_url="https://openrouter.ai/api/v1",
+                )
+                logger.info(f"OpenRouter клиент инициализирован, модель: {model}")
             except ImportError:
                 logger.warning("OpenAI пакет не установлен. Используем шаблоны.")
     
@@ -48,96 +72,101 @@ class LetterGenerator:
     ) -> str:
         """
         Генерирует сопроводительное письмо.
-        
+
+        Если OpenRouter настроен — всегда использует LLM (резюме не обязательно).
+        Иначе — шаблонный fallback.
+
         Args:
             vacancy: Вакансия
-            resume: Резюме (опционально)
-            personalize: Персонализировать под резюме
-            
+            resume: Резюме (опционально, для дополнительного контекста)
+            personalize: Игнорируется, оставлен для совместимости
+
         Returns:
             Строка с письмом
         """
-        if self._client and personalize and resume:
-            # Используем LLM
+        if self._client:
             return await self._generate_with_llm(vacancy, resume)
         else:
-            # Используем шаблоны
             return self._generate_from_template(vacancy, resume)
     
-    async def _generate_with_llm(self, vacancy: VacancyDetail, resume: ResumeDetail) -> str:
+    async def _generate_with_llm(
+        self,
+        vacancy: VacancyDetail,
+        resume: Optional[ResumeDetail] = None,
+    ) -> str:
         """
-        Генерирует письмо через LLM (OpenAI).
-        
+        Генерирует письмо через LLM (OpenRouter).
+
         Args:
             vacancy: Вакансия
-            resume: Резюме
-            
+            resume: Резюме (опционально)
+
         Returns:
             Строка с письмом
         """
         if not self._client:
             return self._generate_from_template(vacancy, resume)
-        
-        # Формируем промпт
+
         prompt = self._build_llm_prompt(vacancy, resume)
-        
+
         try:
             response = self._client.chat.completions.create(
                 model=self.model,
                 messages=[
-                    {
-                        "role": "system",
-                        "content": "Ты профессиональный HR-консультант. Пишешь качественные сопроводительные письма на русском языке. Письмо должно быть кратким (150-250 слов), конкретным и показывать мотивацию кандидата.",
-                    },
+                    {"role": "system", "content": _build_profile_prompt()},
                     {"role": "user", "content": prompt},
                 ],
                 temperature=0.7,
-                max_tokens=500,
+                max_tokens=600,
             )
-            
+
             letter = response.choices[0].message.content.strip()
-            logger.info("Сопроводительное письмо сгенерировано через LLM")
+            logger.info(f"Письмо сгенерировано через OpenRouter ({self.model})")
             return letter
-            
+
         except Exception as e:
-            logger.error(f"Ошибка генерации через LLM: {e}")
+            logger.error(f"Ошибка генерации через OpenRouter: {e}")
             return self._generate_from_template(vacancy, resume)
-    
-    def _build_llm_prompt(self, vacancy: VacancyDetail, resume: ResumeDetail) -> str:
-        """Строит промпт для LLM."""
-        prompt = f"""
-Напиши сопроводительное письмо для следующей вакансии:
 
-**Вакансия:** {vacancy.name}
-**Компания:** {vacancy.employer.name if vacancy.employer else "Не указано"}
+    def _build_llm_prompt(
+        self,
+        vacancy,  # dict или VacancyDetail
+        resume=None,
+    ) -> str:
+        """Строит промпт для LLM. Принимает dict или VacancyDetail."""
+        # Универсальное извлечение полей — работает с dict и Pydantic
+        if isinstance(vacancy, dict):
+            title = vacancy.get("name") or vacancy.get("title", "")
+            company = vacancy.get("company", "Не указано")
+            skills = vacancy.get("skills", [])
+            vacancy_skills = ", ".join(skills[:10]) if skills else "не указаны"
+            description = (vacancy.get("description") or "")[:600]
+        else:
+            title = getattr(vacancy, "name", "")
+            employer = getattr(vacancy, "employer", None)
+            company = employer.name if employer else "Не указано"
+            skills_list = getattr(vacancy, "skills_list", None) or []
+            vacancy_skills = ", ".join(skills_list[:10]) if skills_list else "не указаны"
+            description = (getattr(vacancy, "description_plain", None) or "")[:600]
 
-**Требования:**
-{vacancy.description_plain[:500] if vacancy.description else "Не указаны"}
-
-**Ключевые навыки:** {", ".join(vacancy.skills_list[:10]) if vacancy.skills_list else "Не указаны"}
-
----
-
-**Моё резюме:**
-
-**Опыт работы:** {resume.total_experience_formatted}
-**Последняя должность:** {resume.experience[0].position if resume.experience else "Не указано"}
-**Компания:** {resume.experience[0].company if resume.experience else "Не указано"}
-
-**Навыки:** {", ".join(resume.skills_flat_list[:15])}
-
-**О себе:** {resume.about[:200] if resume.about else "Не указано"}
-
----
-
-Напиши письмо, которое:
-1. Показывает интерес к компании и вакансии
-2. Подчёркивает релевантный опыт и навыки
-3. Конкретно (не общо) объясняет почему я подхожу
-4. Завершается призывом к действию
-
-Пиши на русском языке. 150-250 слов.
+        resume_context = ""
+        if resume and not isinstance(resume, dict):
+            resume_context = f"""
+**Дополнительно из резюме:**
+- Опыт: {resume.total_experience_formatted}
+- Последняя должность: {resume.experience[0].position if resume.experience else "—"}
+- Навыки: {", ".join(resume.skills_flat_list[:10])}
 """
+
+        prompt = f"""Напиши сопроводительное письмо для вакансии:
+
+**Вакансия:** {title}
+**Компания:** {company}
+**Требуемые навыки:** {vacancy_skills}
+**Описание:** {description}
+{resume_context}
+Сделай акцент на релевантных проектах кандидата. Упомяни конкретные технологии из стека, которые совпадают с требованиями вакансии."""
+
         return prompt
     
     def _generate_from_template(
@@ -146,52 +175,42 @@ class LetterGenerator:
         resume: Optional[ResumeDetail] = None,
     ) -> str:
         """
-        Генерирует письмо из шаблона.
-        
+        Fallback — генерирует письмо из шаблона с профилем кандидата.
+
         Args:
             vacancy: Вакансия
             resume: Резюме (опционально)
-            
+
         Returns:
             Строка с письмом
         """
-        company_name = vacancy.employer.name if vacancy.employer else "вашей компании"
-        vacancy_name = vacancy.name
-        
-        if resume:
-            # Персонализированный шаблон
-            experience = resume.total_experience_formatted
-            latest_position = resume.experience[0].position if resume.experience else "разработчик"
-            skills = ", ".join(resume.skills_flat_list[:5]) if resume.skills_flat_list else "соответствующие навыки"
-            
-            letter = f"""Здравствуйте!
-
-Меня заинтересовала вакансия "{vacancy_name}" в компании {company_name}.
-
-Мой опыт работы в IT составляет {experience}. На текущий момент я работаю в должностива "{latest_position}", где занимаюсь разработкой и поддержанием программных продуктов.
-
-Мои ключевые навыки: {skills}.
-
-Я уверен, что мой опыт и компетенции будут полезны вашей команде. Буду рад обсудить детали на собеседовании.
-
-С уважением,
-{resume.full_name if resume else "Кандидат"}
-"""
+        if isinstance(vacancy, dict):
+            vacancy_name = vacancy.get("name") or vacancy.get("title", "")
+            company_name = vacancy.get("company", "вашей компании")
         else:
-            # Базовый шаблон
-            letter = f"""Здравствуйте!
+            employer = getattr(vacancy, "employer", None)
+            company_name = employer.name if employer else "вашей компании"
+            vacancy_name = getattr(vacancy, "name", "")
 
-Меня заинтересовала вакансия "{vacancy_name}" в компании {company_name}.
+        contacts = " | ".join(filter(None, [
+            MY_GITHUB and f"GitHub: {MY_GITHUB}",
+            MY_TELEGRAM and f"Telegram: {MY_TELEGRAM}",
+        ]))
 
-У меня есть релевантный опыт работы и навыки, необходимые для данной позиции. Буду рад внести свой вклад в развитие вашей команды.
+        letter = f"""Здравствуйте!
+
+Меня заинтересовала вакансия "{vacancy_name}" в {company_name}.
+
+{MY_RESUME_TEXT}
+
+{contacts}
 
 Буду рад обсудить детали на собеседовании.
 
 С уважением,
-Кандидат
-"""
-        
-        logger.info("Сопроводительное письмо сгенерировано из шаблона")
+{MY_NAME or "Кандидат"}"""
+
+        logger.info("Сопроводительное письмо сгенерировано из шаблона (fallback)")
         return letter.strip()
     
     def generate_quick_letter(self, vacancy_name: str, company_name: str) -> str:

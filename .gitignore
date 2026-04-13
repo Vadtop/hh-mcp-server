@@ -7,3 +7,9 @@ __pycache__/
 web.log
 *.log
 .vscode/
+*.png
+*.jpg
+*.jpeg
+.env.local
+hh_mcp.log
+MCP_FIX_PLAN.md

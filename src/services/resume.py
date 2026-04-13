@@ -51,7 +51,7 @@ class ResumeService:
         
         try:
             url = f"https://hh.ru/resume/{resume_id}"
-            await page_obj.goto(url, wait_until="networkidle", timeout=30000)
+            await page_obj.goto(url, wait_until="domcontentloaded", timeout=60000)
             
             resume = await ResumeParser.parse_resume_detail(page_obj)
             

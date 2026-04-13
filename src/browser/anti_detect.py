@@ -22,7 +22,7 @@ class AntiDetect:
     """
     
     @staticmethod
-    async def random_delay(min_sec: float = 1.0, max_sec: float = 4.0):
+    async def random_delay(min_sec: float = 0.3, max_sec: float = 1.0):
         """
         Рандомная пауза между действиями.
         """

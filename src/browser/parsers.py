@@ -192,7 +192,7 @@ class VacancyParser:
         """
         try:
             # Ждём загрузки
-            await page.wait_for_load_state("networkidle", timeout=10000)
+            await page.wait_for_timeout(2000)
             
             # Название
             title_el = page.locator('[data-qa="vacancy-title"]')
@@ -273,7 +273,7 @@ class ResumeParser:
         resumes = []
         
         try:
-            await page.goto("https://hh.ru/resume/mine", wait_until="networkidle", timeout=15000)
+            await page.goto("https://hh.ru/resume/mine", wait_until="domcontentloaded", timeout=60000)
             
             # Находим все резюме
             resume_items = page.locator('[data-qa="resume-item"]')
@@ -381,7 +381,7 @@ class NegotiationParser:
         applications = []
         
         try:
-            await page.goto("https://hh.ru/applicant/negotiations", wait_until="networkidle", timeout=15000)
+            await page.goto("https://hh.ru/applicant/negotiations", wait_until="domcontentloaded", timeout=60000)
             
             # Находим все отклики
             items = page.locator('[data-qa="negotiation-item"]')

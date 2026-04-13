@@ -45,29 +45,36 @@ class ApplyService:
         """
         if not await self.auth.ensure_authenticated():
             return {"error": "Не удалось авторизоваться"}
-        
+
+        # Проверяем — уже откликались?
+        existing = await self.get_applications()
+        for app in existing:
+            url = app.get("url", "")
+            if vacancy_id in url:
+                return {
+                    "error": f"Уже откликались на эту вакансию (статус: {app.get('status', 'неизвестен')})",
+                    "already_applied": True,
+                }
+
         page_obj = await self.browser.new_page()
         actions = BrowserActions(page_obj)
-        
+
         try:
-            # Переходим на страницу вакансии
             url = f"https://hh.ru/vacancy/{vacancy_id}"
             await actions.goto(url)
             
             # Кликаем кнопку отклика
             result = await actions.click_apply_button()
             
-            if result["success"]:
+            if result.get("success"):
                 return {
                     "success": True,
                     "message": "Отклик отправлен!",
                     "vacancy_id": vacancy_id,
                 }
-            
-            elif result["needs_letter"] and cover_letter:
-                # Заполняем сопроводительное письмо
+
+            elif result.get("needs_letter") and cover_letter:
                 letter_success = await actions.fill_cover_letter(cover_letter)
-                
                 if letter_success:
                     return {
                         "success": True,
@@ -76,19 +83,19 @@ class ApplyService:
                     }
                 else:
                     return {"error": "Не удалось отправить письмо"}
-            
-            elif result["needs_letter"] and not cover_letter:
+
+            elif result.get("needs_letter") and not cover_letter:
                 return {
                     "error": "Вакансия требует сопроводительное письмо",
                     "needs_letter": True,
                 }
-            
-            elif result["has_questions"]:
+
+            elif result.get("has_questions"):
                 return {
                     "error": "Вакансия имеет вопросы — требуется ручное заполнение",
                     "has_questions": True,
                 }
-            
+
             else:
                 return {"error": result.get("error", "Неизвестная ошибка")}
                 
@@ -135,7 +142,7 @@ class ApplyService:
         
         try:
             url = f"https://hh.ru/applicant/negotiations/vacancy/{vacancy_id}"
-            await page_obj.goto(url, wait_until="networkidle", timeout=30000)
+            await page_obj.goto(url, wait_until="domcontentloaded", timeout=60000)
             
             return await NegotiationParser.parse_application_status(page_obj)
         except Exception as e:

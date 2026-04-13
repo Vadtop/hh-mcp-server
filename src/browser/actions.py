@@ -28,12 +28,11 @@ class BrowserActions:
         self.page = page
         self.anti_detect = AntiDetect()
     
-    async def goto(self, url: str, wait_until: str = "networkidle"):
+    async def goto(self, url: str, wait_until: str = "domcontentloaded"):
         """
         Переход на URL с анти-детект задержкой.
         """
-        await self.anti_detect.random_delay()
-        await self.page.goto(url, wait_until=wait_until, timeout=30000)
+        await self.page.goto(url, wait_until=wait_until, timeout=60000)
         await self.anti_detect.random_delay()
     
     async def scroll_to_bottom(self):
@@ -79,18 +78,37 @@ class BrowserActions:
             - error: str (ошибка)
         """
         try:
-            # Кнопка отклика — несколько вариантов селектора
+            # hh.ru показывает форму "Напишите телефон" — закрываем её
+            phone_form_selectors = [
+                '[data-qa="phone-number-form"] button[data-qa="close"]',
+                'button[data-qa="phone-number-form-skip"]',
+                'button:has-text("Продолжить без телефона")',
+                'button:has-text("Пропустить")',
+                # Кнопка "Продолжить" в форме телефона ведёт дальше без ввода
+            ]
+            for sel in phone_form_selectors:
+                loc = self.page.locator(sel)
+                if await loc.count() > 0:
+                    await loc.click()
+                    logger.debug(f"Закрыта форма телефона: {sel}")
+                    await self.page.wait_for_timeout(1000)
+                    break
+
             apply_selectors = [
                 '[data-qa="vacancy-response"]',
                 '[data-qa="vacancy-response-link"]',
+                '[data-qa="vacancy-response-popup-button"]',
                 'a[href*="applicant/vacancy_response"]',
                 'button[data-qa*="response"]',
+                '[class*="vacancy-response-button"]',
+                'button:has-text("Откликнуться")',
             ]
             apply_btn = None
             for sel in apply_selectors:
                 loc = self.page.locator(sel).nth(vacancy_index)
                 if await loc.count() > 0:
                     apply_btn = loc
+                    logger.debug(f"Кнопка отклика найдена: {sel}")
                     break
 
             if apply_btn is None:
@@ -99,20 +117,33 @@ class BrowserActions:
             await apply_btn.click()
             await self.anti_detect.random_delay()
 
-            # Ждём реакцию страницы
-            await self.page.wait_for_timeout(2000)
+            # Ждём реакцию страницы — до 5 сек
+            await self.page.wait_for_timeout(5000)
 
-            # 1. Модальное окно с письмом — несколько вариантов
+            # Скриншот для диагностики (перезаписывается каждый раз)
+            try:
+                await self.page.screenshot(path="apply_debug.png")
+                logger.info(f"Скриншот после клика: apply_debug.png | URL: {self.page.url}")
+            except Exception:
+                pass
+
+            # 1. Модальное окно с письмом
             letter_selectors = [
                 '[data-qa="cover-letter-modal"]',
                 '[data-qa="vacancy-response-popup"]',
+                '[data-qa="vacancy-response-letter-toggle"]',
                 'textarea[data-qa*="letter"]',
                 'textarea[placeholder*="письм"]',
                 'textarea[placeholder*="Напишите"]',
+                'textarea[placeholder*="сопроводительн"]',
                 '.vacancy-response-letter',
+                # hh.ru 2025-2026
+                '[class*="applicant-response"] textarea',
+                'div[class*="response-popup"] textarea',
             ]
             for sel in letter_selectors:
                 if await self.page.locator(sel).count() > 0:
+                    logger.debug(f"Найдено поле письма: {sel}")
                     return {"success": False, "needs_letter": True, "has_questions": False}
 
             # 2. Вопросы от работодателя
@@ -120,27 +151,96 @@ class BrowserActions:
                 '[data-qa="vacancy-questions"]',
                 '[data-qa="applicant-questions"]',
                 '.vacancy-questions',
+                '[class*="employer-questions"]',
             ]
             for sel in question_selectors:
                 if await self.page.locator(sel).count() > 0:
                     return {"success": False, "needs_letter": False, "has_questions": True}
 
-            # 3. Snackbar / уведомление об успехе
+            # 3. Кнопка уже нажата / отклик отправлен (кнопка стала "Отклик отправлен")
+            sent_selectors = [
+                '[data-qa="vacancy-response-letter-confirm"]',
+                'button:has-text("Отклик отправлен")',
+                'button:has-text("Вы откликнулись")',
+                '[class*="response-button--applied"]',
+                # hh.ru 2025-2026: кнопка меняет текст
+                'button:has-text("Отклик направлен")',
+                'button:has-text("Вы уже откликнулись")',
+                '[data-qa="vacancy-response-completed"]',
+            ]
+            for sel in sent_selectors:
+                if await self.page.locator(sel).count() > 0:
+                    return {"success": True, "needs_letter": False, "has_questions": False}
+
+            # 4. Snackbar / toast с подтверждением
             snackbar_selectors = [
                 '[data-qa="snackbar"]',
-                '[class*="notification"]',
+                '[class*="snackbar"]',
+                '[data-qa="bloko-notification"]',
                 '[class*="toast"]',
             ]
             for sel in snackbar_selectors:
-                loc = self.page.locator(sel)
+                loc = self.page.locator(sel).first
                 if await loc.count() > 0:
-                    text = await loc.inner_text()
+                    try:
+                        text = await loc.inner_text()
+                    except Exception:
+                        text = ""
                     if any(w in text.lower() for w in ["отклик", "отправ", "успешно"]):
                         return {"success": True, "needs_letter": False, "has_questions": False}
 
-            # 4. Редирект на страницу отклика
+            # 5. Редирект на страницу отклика
             if any(w in self.page.url.lower() for w in ["response", "negotiations"]):
                 return {"success": True, "needs_letter": False, "has_questions": False}
+
+            # 6. Модальное окно подтверждения без textarea — кнопка "Откликнуться" внутри модалки
+            # (hh.ru 2025+: диалог с выбором резюме, без поля письма)
+            # Также: bloko-notification с кнопкой "Откликнуться" и "Закрыть"
+            modal_confirm_selectors = [
+                '[data-qa="vacancy-response-popup-button"]',
+                '[data-qa="bloko-notification"] button:has-text("Откликнуться")',
+                '.bloko-notification button:has-text("Откликнуться")',
+                '[role="dialog"] button:has-text("Откликнуться")',
+                '[role="dialog"] button[data-qa*="submit"]',
+                '[role="dialog"] button[data-qa*="response"]',
+                'div[class*="modal"] button:has-text("Откликнуться")',
+                'div[class*="popup"] button:has-text("Откликнуться")',
+            ]
+            for sel in modal_confirm_selectors:
+                loc = self.page.locator(sel)
+                if await loc.count() > 0:
+                    logger.info(f"Найден диалог подтверждения: {sel} — кликаем")
+                    await loc.click()
+                    await self.page.wait_for_timeout(4000)
+
+                    # Проверяем успех после второго клика
+                    for sent_sel in sent_selectors:
+                        if await self.page.locator(sent_sel).count() > 0:
+                            return {"success": True, "needs_letter": False, "has_questions": False}
+                    for snack_sel in snackbar_selectors:
+                        snack_loc = self.page.locator(snack_sel).first
+                        if await snack_loc.count() > 0:
+                            try:
+                                snack_text = await snack_loc.inner_text()
+                            except Exception:
+                                snack_text = ""
+                            if any(w in snack_text.lower() for w in ["отклик", "отправ", "успешно"]):
+                                return {"success": True, "needs_letter": False, "has_questions": False}
+                    if any(w in self.page.url.lower() for w in ["response", "negotiations"]):
+                        return {"success": True, "needs_letter": False, "has_questions": False}
+
+                    # Если после клика модалка пропала — считаем успехом
+                    if await self.page.locator(sel).count() == 0:
+                        return {"success": True, "needs_letter": False, "has_questions": False}
+
+                    break
+
+            # 7. Пагинация страницы не поменялась — делаем финальный скриншот
+            try:
+                await self.page.screenshot(path="apply_debug_final.png")
+                logger.warning(f"Неизвестный результат. URL: {self.page.url} | Скриншот: apply_debug_final.png")
+            except Exception:
+                pass
 
             return {"success": False, "error": "Неизвестный результат отклика"}
 
@@ -150,10 +250,13 @@ class BrowserActions:
     
     async def fill_cover_letter(self, letter: str) -> bool:
         """
-        Заполняет сопроводительное письмо в модальном окне.
+        Заполняет и отправляет сопроводительное письмо в модальном окне.
+
+        Returns:
+            True если отклик отправлен успешно
         """
         try:
-            # Поле для письма — несколько вариантов
+            # Ждём появления поля письма до 5 сек
             input_selectors = [
                 '[data-qa="cover-letter-input"]',
                 'textarea[data-qa*="letter"]',
@@ -161,34 +264,54 @@ class BrowserActions:
                 'textarea[placeholder*="Напишите"]',
                 'textarea[placeholder*="сопроводительн"]',
                 '.vacancy-response-letter textarea',
+                '[class*="applicant-response"] textarea',
+                'div[class*="response-popup"] textarea',
             ]
             letter_input = None
             for sel in input_selectors:
                 loc = self.page.locator(sel)
-                if await loc.count() > 0:
+                try:
+                    await loc.wait_for(timeout=5000)
                     letter_input = loc
+                    logger.debug(f"Поле письма найдено: {sel}")
                     break
+                except Exception:
+                    continue
 
             if letter_input is None:
                 logger.error("Поле для письма не найдено")
                 return False
 
+            # Очищаем и заполняем
+            await letter_input.click()
+            await letter_input.fill("")
             await letter_input.fill(letter)
             await self.anti_detect.random_delay()
 
-            # Кнопка отправки — несколько вариантов
+            # Проверяем что текст реально вставился
+            filled = await letter_input.input_value()
+            if not filled.strip():
+                logger.error("Текст письма не вставился в поле")
+                return False
+
+            # Кнопка отправки — только специфичные селекторы, не button[type=submit]
             submit_selectors = [
                 '[data-qa="cover-letter-submit"]',
                 '[data-qa="vacancy-response-submit"]',
-                'button[type="submit"]',
+                '[data-qa="vacancy-response-letter-submit"]',
                 'button[data-qa*="submit"]',
-                'button[data-qa*="response"]',
+                # hh.ru 2025-2026
+                'button:has-text("Откликнуться")',
+                'button:has-text("Отправить")',
+                '[class*="response-popup"] button[class*="primary"]',
+                '[class*="applicant-response"] button[class*="primary"]',
             ]
             submit_btn = None
             for sel in submit_selectors:
                 loc = self.page.locator(sel)
                 if await loc.count() > 0:
                     submit_btn = loc
+                    logger.debug(f"Кнопка отправки найдена: {sel}")
                     break
 
             if submit_btn is None:
@@ -196,20 +319,29 @@ class BrowserActions:
                 return False
 
             await submit_btn.click()
-            await self.anti_detect.random_delay()
 
-            # Ждём подтверждение (любой из вариантов)
+            # Ждём подтверждение до 8 сек
+            success_selectors = [
+                '[data-qa="snackbar"]',
+                '[class*="snackbar"]',
+                '[class*="notification"]',
+                '[class*="toast"]',
+                'button:has-text("Отклик отправлен")',
+                'button:has-text("Вы откликнулись")',
+            ]
+            combined = ", ".join(success_selectors)
             try:
-                await self.page.wait_for_selector(
-                    '[data-qa="snackbar"], [class*="notification"], [class*="toast"]',
-                    timeout=10000
-                )
-            except Exception:
-                # Если snackbar не появился — проверяем редирект
+                await self.page.wait_for_selector(combined, timeout=8000)
+                logger.info("Отклик с письмом отправлен успешно")
+                return True
+            except PlaywrightTimeout:
+                # Snackbar не появился — проверяем URL
                 if any(w in self.page.url.lower() for w in ["response", "negotiations"]):
+                    logger.info("Отклик отправлен (редирект)")
                     return True
+                logger.warning("Не удалось подтвердить отправку отклика")
+                return False
 
-            return True
         except Exception as e:
             logger.error(f"Ошибка заполнения письма: {e}")
             return False

@@ -42,10 +42,38 @@ CACHE_TTL_SECONDS = int(os.getenv("CACHE_TTL", "300"))  # 5 минут по ум
 CACHE_ENABLED = os.getenv("CACHE_ENABLED", "true").lower() == "true"
 
 # === AI Configuration ===
-# Для AI-скоринга и генерации писем
-OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "")
-AI_MODEL = os.getenv("AI_MODEL", "gpt-3.5-turbo")
+# OpenRouter (совместим с OpenAI API)
+OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY", "")
+OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1"
+AI_MODEL = os.getenv("AI_MODEL", "google/gemini-2.5-flash")
 AI_TEMPERATURE = float(os.getenv("AI_TEMPERATURE", "0.7"))
+
+# === My Profile (для персональных писем и скоринга) ===
+# Личные данные — задаются в .env, не хардкодятся в коде
+MY_NAME = os.getenv("MY_NAME", "")
+MY_GITHUB = os.getenv("MY_GITHUB", "")
+MY_TELEGRAM = os.getenv("MY_TELEGRAM", "")
+MY_EXPECTED_SALARY = int(os.getenv("MY_EXPECTED_SALARY", "100000"))
+MY_WORK_FORMAT = os.getenv("MY_WORK_FORMAT", "удалённо")
+
+# Навыки — можно переопределить через .env (через запятую)
+_skills_env = os.getenv("MY_SKILLS", "")
+MY_SKILLS: list[str] = (
+    [s.strip() for s in _skills_env.split(",") if s.strip()]
+    if _skills_env
+    else [
+        "python", "fastapi", "langchain", "chromadb", "n8n",
+        "openai", "claude", "deepseek", "docker", "playwright",
+        "rag", "llm", "mcp", "multi-agent",
+    ]
+)
+
+# Текст резюме для промпта — из .env или дефолтный безличный
+MY_RESUME_TEXT = os.getenv(
+    "MY_RESUME_TEXT",
+    "AI Integration Engineer. RAG-системы, LLM-агенты, автоматизация на n8n. "
+    "Стек: Python, FastAPI, LangChain, ChromaDB, Docker, Playwright, MCP.",
+)
 
 # Скоринг
 SCORING_MIN = 0

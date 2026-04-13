@@ -88,11 +88,14 @@ class BrowserEngine:
         
         # Загружаем сохранённую сессию
         storage_state = self._load_storage_state()
-        
+
+        # Фиксированный user-agent — случайный ломает сессию (hh.ru привязывает к UA)
+        fixed_ua = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36"
+
         # Создаём контекст
         self._context = await self._browser.new_context(
             viewport={"width": 1920, "height": 1080},
-            user_agent=self._get_user_agent(),
+            user_agent=fixed_ua,
             locale="ru-RU",
             timezone_id="Europe/Moscow",
             storage_state=storage_state,

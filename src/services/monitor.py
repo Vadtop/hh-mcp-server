@@ -1,25 +1,17 @@
 """
 Сервис мониторинга откликов.
 
-Реализует:
-- Периодическую проверку статусов откликов
-- Отслеживание изменений
-- Уведомления (Console/Telegram)
-- Историю откликов (JSON/SQLite)
-- Генерацию отчётов
+Периодически проверяет статусы откликов через браузер (ApplyService),
+сравнивает с предыдущим состоянием, отправляет Telegram-уведомление при изменении.
 """
 
 import json
-import time
 import asyncio
 import logging
 from pathlib import Path
-from typing import Optional, Callable
 from datetime import datetime
+from typing import Optional
 
-from src.api.client import HHAPIClient
-from src.api.endpoints import NEGOTIATIONS, NEGOTIATIONS_ACTIVE
-from src.models.application import Application, ApplicationStatus, ApplicationStats
 from src.config import (
     MONITOR_INTERVAL_SECONDS,
     NOTIFY_TELEGRAM,
@@ -33,302 +25,191 @@ logger = logging.getLogger(__name__)
 
 class MonitorService:
     """
-    Сервис мониторинга за откликами.
-    
-    Периодически проверяет статусы откликов и уведомляет об изменениях.
+    Мониторинг откликов через браузер.
+
+    Не требует HHAPIClient — использует ApplyService.get_applications()
+    который парсит страницу hh.ru/applicant/negotiations через Playwright.
     """
-    
+
     def __init__(
         self,
-        api_client: HHAPIClient,
+        apply_service,
         interval: int = MONITOR_INTERVAL_SECONDS,
         history_file: Optional[str] = None,
     ):
-        self.client = api_client
+        self.apply_service = apply_service
         self.interval = interval
-        self.history_file = history_file or str(BASE_DIR / ".applications_history.json")
-        
-        # Состояние
+        self.history_file = Path(history_file or (BASE_DIR / ".applications_history.json"))
+
         self._running = False
-        self._previous_applications: dict[str, str] = {}  # vacancy_id -> status
         self._task: Optional[asyncio.Task] = None
-        
-        # Callback для уведомлений
-        self._on_status_change: Optional[Callable] = None
-        
-        # Загружаем историю
+        # vacancy_title -> status
+        self._previous: dict[str, str] = {}
+
         self._load_history()
-    
-    def set_callback(self, callback: Callable):
-        """
-        Устанавливает callback для уведомлений об изменениях.
-        
-        Args:
-            callback: Функция(Application, old_status, new_status)
-        """
-        self._on_status_change = callback
-    
-    async def start_monitoring(self):
-        """Запускает фоновый мониторинг."""
+
+    async def start(self) -> str:
+        """Запускает фоновый мониторинг. Возвращает статус."""
         if self._running:
-            logger.warning("Мониторинг уже запущен")
-            return
-        
+            return f"⚠️ Мониторинг уже запущен (интервал: {self.interval} сек)"
+
         self._running = True
-        logger.info(f"Мониторинг запущен (интервал: {self.interval} сек)")
-        
-        # Загружаем текущие отклики
-        await self._check_applications()
-        
-        # Запускаем цикл
-        self._task = asyncio.create_task(self._monitor_loop())
-    
-    async def stop_monitoring(self):
+        self._task = asyncio.create_task(self._loop())
+        logger.info(f"Мониторинг запущен, интервал {self.interval} сек")
+
+        notify = "Telegram" if (NOTIFY_TELEGRAM and TELEGRAM_BOT_TOKEN) else "Console"
+        return (
+            f"✅ Мониторинг запущен!\n"
+            f"📊 Интервал: {self.interval} сек\n"
+            f"🔔 Уведомления: {notify}"
+        )
+
+    async def stop(self) -> str:
         """Останавливает мониторинг."""
         self._running = False
-        
         if self._task:
             self._task.cancel()
             try:
                 await self._task
             except asyncio.CancelledError:
                 pass
-        
         logger.info("Мониторинг остановлен")
-    
-    async def _monitor_loop(self):
-        """Основной цикл мониторинга."""
+        return "🛑 Мониторинг остановлен"
+
+    async def check_now(self) -> str:
+        """Разовая проверка без запуска фонового цикла."""
+        changes = await self._check()
+        if not changes:
+            return "✅ Изменений статусов нет"
+        lines = [f"🔔 Изменений: {len(changes)}"]
+        for c in changes:
+            lines.append(f"  • {c['title']}: {c['old']} → {c['new']}")
+        return "\n".join(lines)
+
+    # ------------------------------------------------------------------
+
+    async def _loop(self):
         while self._running:
             try:
+                await self._check()
                 await asyncio.sleep(self.interval)
-                await self._check_applications()
             except asyncio.CancelledError:
                 break
             except Exception as e:
                 logger.error(f"Ошибка в цикле мониторинга: {e}")
-                await asyncio.sleep(60)  # Пауза при ошибке
-    
-    async def _check_applications(self):
-        """Проверяет текущие отклики и находит изменения."""
-        logger.debug("Проверка откликов...")
-        
-        # Получаем активные отклики
-        applications = await self.client.get(NEGOTIATIONS_ACTIVE)
-        
-        current_applications: dict[str, str] = {}
-        
-        items = applications.get("items", [])
-        for item in items:
-            app = Application(**item)
-            vacancy_id = app.vacancy_id or ""
-            status = app.status
-            
-            current_applications[vacancy_id] = status
-            
-            # Проверяем изменения
-            if vacancy_id in self._previous_applications:
-                old_status = self._previous_applications[vacancy_id]
-                
-                if old_status != status:
-                    logger.info(f"Изменение статуса: {vacancy_id} {old_status} -> {status}")
-                    await self._handle_status_change(app, old_status, status)
-            
-            self._previous_applications[vacancy_id] = status
-        
-        # Сохраняем историю
+                await asyncio.sleep(60)
+
+    async def _check(self) -> list[dict]:
+        """Сверяет текущие отклики с историей, возвращает список изменений."""
+        try:
+            applications = await self.apply_service.get_applications()
+        except Exception as e:
+            logger.error(f"Ошибка получения откликов: {e}")
+            return []
+
+        current: dict[str, str] = {}
+        changes: list[dict] = []
+
+        for app in applications:
+            title = app.get("title", "")
+            status = app.get("status", "")
+            company = app.get("company", "")
+            if not title:
+                continue
+
+            current[title] = status
+
+            old = self._previous.get(title)
+            if old is not None and old != status:
+                change = {"title": title, "company": company, "old": old, "new": status}
+                changes.append(change)
+                logger.info(f"Смена статуса: {title!r} {old!r} → {status!r}")
+                await self._notify(change)
+
+        self._previous = current
         self._save_history()
-    
-    async def _handle_status_change(
-        self,
-        app: Application,
-        old_status: str,
-        new_status: str,
-    ):
-        """
-        Обрабатывает изменение статуса.
-        
-        Args:
-            app: Отклик
-            old_status: Старый статус
-            new_status: Новый статус
-        """
-        status = ApplicationStatus(id=new_status, name=app.status_name)
-        
-        # Формируем сообщение
-        message = self._format_change_message(app, old_status, new_status)
-        
-        # Уведомляем
-        await self._send_notification(message)
-        
-        # Callback
-        if self._on_status_change:
-            self._on_status_change(app, old_status, new_status)
-    
-    def _format_change_message(
-        self,
-        app: Application,
-        old_status: str,
-        new_status: str,
-    ) -> str:
-        """Форматирует сообщение об изменении статуса."""
-        old = ApplicationStatus(id=old_status, name="")
-        new = ApplicationStatus(id=new_status, name=app.status_name)
-        
+        return changes
+
+    async def _notify(self, change: dict):
+        """Console + Telegram при изменении статуса."""
+        msg = self._format_message(change)
+
+        print(f"\n{'='*50}\n{msg}\n{'='*50}\n")
+
+        if NOTIFY_TELEGRAM and TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID:
+            await self._send_telegram(msg)
+
+    def _format_message(self, change: dict) -> str:
+        emoji_map = {
+            "invited":  "🎉",
+            "offer":    "🎊",
+            "refused":  "😔",
+            "viewed":   "👀",
+        }
+        new_status = change["new"].lower()
+        emoji = emoji_map.get(new_status, "🔔")
+
         lines = [
-            f"{new.emoji} Изменение статуса отклика!",
-            "",
-            f"📌 {app.vacancy_name}",
-            f"🏢 {app.employer_name}",
+            f"{emoji} Изменение статуса отклика!",
             f"",
-            f"   {old.emoji} {old_status} → {new.emoji} {new.name}",
+            f"📌 {change['title']}",
+        ]
+        if change.get("company"):
+            lines.append(f"🏢 {change['company']}")
+        lines += [
+            f"",
+            f"   {change['old']} → {change['new']}",
             f"",
             f"🕐 {datetime.now().strftime('%d.%m.%Y %H:%M')}",
         ]
-        
-        # Персонализированные сообщения
+
         if new_status == "invited":
-            lines.append("")
-            lines.append("🎉 Поздравляем! Вас пригласили на собеседование!")
-        elif new_status == "refused":
-            lines.append("")
-            lines.append("💪 Не расстраивайтесь! Следующая вакансия будет лучше!")
+            lines.append("🎉 Вас пригласили на собеседование!")
         elif new_status == "offer":
-            lines.append("")
-            lines.append("🎊 НЕВЕРОЯТНО! Вам сделали предложение о работе!")
-        
+            lines.append("🎊 Вам сделали предложение о работе!")
+        elif new_status == "refused":
+            lines.append("💪 Не расстраивайтесь, следующая будет лучше!")
+
         return "\n".join(lines)
-    
-    async def _send_notification(self, message: str):
-        """
-        Отправляет уведомление.
-        
-        Args:
-            message: Текст уведомления
-        """
-        # Console (всегда)
-        print(f"\n{'='*50}")
-        print(message)
-        print(f"{'='*50}\n")
-        
-        # Telegram (опционально)
-        if NOTIFY_TELEGRAM and TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID:
-            await self._send_telegram_notification(message)
-    
-    async def _send_telegram_notification(self, message: str):
-        """Отправляет уведомление в Telegram."""
+
+    async def _send_telegram(self, message: str):
         try:
             import aiohttp
-            
             url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
             payload = {
                 "chat_id": TELEGRAM_CHAT_ID,
                 "text": message,
                 "parse_mode": "HTML",
             }
-            
             async with aiohttp.ClientSession() as session:
-                async with session.post(url, json=payload) as response:
-                    if response.status == 200:
+                async with session.post(url, json=payload) as resp:
+                    if resp.status == 200:
                         logger.info("Telegram уведомление отправлено")
                     else:
-                        logger.error(f"Ошибка отправки Telegram: {response.status}")
+                        logger.error(f"Telegram ошибка: {resp.status}")
+        except ImportError:
+            logger.warning("aiohttp не установлен — Telegram уведомления недоступны")
         except Exception as e:
-            logger.error(f"Ошибка Telegram уведомления: {e}")
-    
-    def check_now(self) -> dict:
-        """
-        Проверяет отклики прямо сейчас (без запуска мониторинга).
-        
-        Returns:
-            dict с результатами проверки
-        """
-        # Синхронная обёртка
-        import asyncio
-        
-        try:
-            loop = asyncio.get_event_loop()
-        except RuntimeError:
-            loop = asyncio.new_event_loop()
-            asyncio.set_event_loop(loop)
-        
-        return loop.run_until_complete(self._check_applications_sync())
-    
-    async def _check_applications_sync(self) -> dict:
-        """Проверяет отклики (async версия)."""
-        applications = await self.client.get(NEGOTIATIONS_ACTIVE)
-        items = applications.get("items", [])
-        
-        changes = []
-        for item in items:
-            app = Application(**item)
-            vacancy_id = app.vacancy_id or ""
-            status = app.status
-            
-            if vacancy_id in self._previous_applications:
-                old_status = self._previous_applications[vacancy_id]
-                if old_status != status:
-                    changes.append({
-                        "vacancy": app.vacancy_name,
-                        "employer": app.employer_name,
-                        "old": old_status,
-                        "new": status,
-                        "new_name": app.status_name,
-                    })
-            
-            self._previous_applications[vacancy_id] = status
-        
-        return {
-            "total": len(items),
-            "changes": len(changes),
-            "changes_list": changes,
-        }
-    
-    def get_status_summary(self) -> dict:
-        """
-        Получает сводку текущих статусов.
-        
-        Returns:
-            dict со сводкой
-        """
-        from collections import Counter
-        
-        counter = Counter(self._previous_applications.values())
-        
-        return {
-            "total_active": sum(counter.values()),
-            "by_status": dict(counter),
-        }
-    
+            logger.error(f"Ошибка Telegram: {e}")
+
     def _load_history(self):
-        """Загружает историю из файла."""
-        path = Path(self.history_file)
-        if path.exists():
+        if self.history_file.exists():
             try:
-                with open(path, "r", encoding="utf-8") as f:
-                    data = json.load(f)
-                self._previous_applications = data.get("applications", {})
-                logger.debug(f"Загружена история: {len(self._previous_applications)} откликов")
+                data = json.loads(self.history_file.read_text(encoding="utf-8"))
+                self._previous = data.get("applications", {})
+                logger.debug(f"История загружена: {len(self._previous)} откликов")
             except Exception as e:
                 logger.warning(f"Ошибка загрузки истории: {e}")
-    
+
     def _save_history(self):
-        """Сохраняет историю в файл."""
         try:
-            path = Path(self.history_file)
-            path.parent.mkdir(parents=True, exist_ok=True)
-            
+            self.history_file.parent.mkdir(parents=True, exist_ok=True)
             data = {
-                "applications": self._previous_applications,
+                "applications": self._previous,
                 "updated_at": datetime.now().isoformat(),
             }
-            
-            with open(path, "w", encoding="utf-8") as f:
-                json.dump(data, f, indent=2, ensure_ascii=False)
+            self.history_file.write_text(
+                json.dumps(data, indent=2, ensure_ascii=False), encoding="utf-8"
+            )
         except Exception as e:
             logger.warning(f"Ошибка сохранения истории: {e}")
-    
-    def clear_history(self):
-        """Очищает историю."""
-        self._previous_applications.clear()
-        self._save_history()
-        logger.info("История очищена")
