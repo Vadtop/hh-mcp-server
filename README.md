@@ -71,7 +71,13 @@ python run_mcp.py
 | `hh_career_advisor` | Карьерный советник |
 | `hh_skills_gap` | Анализ пробелов в навыках |
 | `hh_salary_forecast` | Прогноз зарплаты по навыкам |
-| ... | + 7 других инструментов |
+| `hh_resume_optimizer` | Рекомендации по улучшению резюме |
+| `hh_get_resume` | Детали резюме по ID |
+| `hh_update_resume` | Обновить резюме |
+| `hh_get_similar` | Похожие вакансии |
+| `hh_start_monitor` | Мониторинг новых ответов |
+| `hh_get_areas` | Список регионов |
+| `hh_get_dictionaries` | Справочники hh.ru |
 
 ## Автор
 
