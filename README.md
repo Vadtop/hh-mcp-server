@@ -1,77 +1,85 @@
 # HH.ru MCP Server
 
-MCP сервер для автоматизации поиска работы на hh.ru через Playwright.
+AI-powered MCP server for hh.ru job search automation with 19 tools — from search to auto-apply with AI-generated cover letters.
 
-Работает как инструмент для AI-ассистентов (Cline, Claude, Cursor) — 19 MCP инструментов для поиска вакансий, управления резюме, автооткликов и AI-аналитики.
-
-> **Почему Playwright, а не API?** С декабря 2025 hh.ru закрыл публичный API для соискателей. Решение — эмуляция реального браузера через Playwright.
+> **Why Playwright, not API?** Since December 2025 hh.ru closed the public API for job seekers. Solution: emulate a real browser via Playwright.
 
 ---
 
-## Возможности
+## Features
 
-- Поиск вакансий по всей России (включая удалёнку, фильтры по зарплате)
-- Детали вакансий, информация о компаниях, похожие вакансии
-- Автоотклики с AI-генерацией сопроводительного письма
-- AI скоринг релевантности вакансий (0–100)
-- Аналитика рынка труда: зарплаты, топ-навыки, топ-компании
-- Карьерный советник: пробелы в навыках, дорожная карта, прогноз зарплаты
-- Мониторинг статусов откликов (Console + Telegram)
-- Управление и оптимизация резюме
-
----
-
-## Стек
-
-Python · FastMCP · Playwright · Pydantic · scikit-learn · OpenRouter API
+- **Job search** — by text, salary, region, remote-only across Russia
+- **Vacancy details** — full info, company profile, similar vacancies
+- **Auto-apply** — one-click with AI-generated cover letter
+- **AI scoring** — vacancy relevance 0–100 based on your profile
+- **Market analytics** — salaries, top skills, top companies for any query
+- **Career advisor** — skills gap analysis, roadmap, salary forecast
+- **Response monitoring** — track application status changes (Console + Telegram)
+- **Resume management** — view, update, optimize with AI recommendations
 
 ---
 
-## Установка и запуск
+## Quick Start
 
-### 1. Зависимости
+### Docker
 
 ```bash
-cd hh_mcp_server_v2
-pip install -r requirements.txt
-playwright install chromium
+git clone https://github.com/Vadtop/hh-mcp-server.git
+cd hh-mcp-server
+cp .env.example .env  # fill in your keys
+docker-compose up --build
 ```
 
-### 2. Настройка `.env`
+### Manual
 
-Скопируй `.env.example` в `.env` и заполни:
+```bash
+git clone https://github.com/Vadtop/hh-mcp-server.git
+cd hh-mcp-server
+pip install -r requirements.txt
+playwright install chromium
+python auth_once.py  # login to hh.ru (one time)
+python run_mcp.py
+```
+
+---
+
+## Configuration
+
+Copy `.env.example` to `.env` and fill in:
 
 ```env
-# AI (обязательно для генерации писем)
+# AI (required for cover letter generation)
 OPENROUTER_API_KEY=sk-or-v1-...
 AI_MODEL=google/gemini-2.5-flash
 
-# Твой профиль (для персонализации писем и скоринга)
-MY_NAME=Вадим
-MY_GITHUB=github.com/Vadtop
-MY_TELEGRAM=@vadimka163
-MY_EXPECTED_SALARY=100000
-MY_WORK_FORMAT=удалённо, по всей России
-MY_RESUME_TEXT=AI Integration Engineer. RAG, LLM-агенты, n8n. Python, FastAPI, LangChain...
-MY_SKILLS=python,fastapi,langchain,n8n,rag,llm,mcp,ai agents,automation,...
+# Your profile (for personalized letters and scoring)
+MY_NAME=Your Name
+MY_GITHUB=github.com/yourname
+MY_TELEGRAM=@yourhandle
+MY_EXPECTED_SALARY=150000
+MY_WORK_FORMAT=remote
+MY_RESUME_TEXT=AI Integration Engineer. RAG, LLM agents, automation...
+MY_SKILLS=python,fastapi,langchain,docker,rag,llm,mcp,ai agents,...
 
-# Уведомления (опционально)
+# Notifications (optional)
 NOTIFY_TELEGRAM=true
 TELEGRAM_BOT_TOKEN=...
 TELEGRAM_CHAT_ID=...
 ```
 
-### 3. Авторизация hh.ru (один раз)
+### First-time Login
 
 ```bash
 python auth_once.py
 ```
 
-Откроется браузер — вводишь телефон и SMS-код. Сессия сохраняется в `.browser_session/` и переиспользуется автоматически. Повторять нужно только если сессия истекла (~30 дней).
+Opens a browser — enter phone and SMS code. Session persists in `.browser_session/` and is reused automatically. Re-login only when session expires (~30 days).
 
-### 4. Подключение к Cline (VS Code)
+---
 
-Добавь в `cline_mcp_settings.json` (Settings → MCP Servers):
+## Connecting to Cline (VS Code)
+
+Add to `cline_mcp_settings.json` (Settings → MCP Servers):
 
 ```json
 {
@@ -85,80 +93,84 @@ python auth_once.py
 }
 ```
 
-После подключения сервер запускается автоматически при каждом старте Cline.
+---
+
+## MCP Tools (19)
+
+### Search
+
+| Tool | Description |
+|---|---|
+| `hh_search` | Search by text, salary, region, remote |
+| `hh_get_vacancy` | Full vacancy details by ID |
+| `hh_get_employer` | Company information |
+| `hh_get_similar` | Similar vacancies |
+
+### Applications
+
+| Tool | Description |
+|---|---|
+| `hh_apply_vacancy` | Apply with AI-generated cover letter |
+| `hh_get_applications` | Application history and statuses |
+| `hh_generate_letter` | Generate letter without sending |
+
+### Resume
+
+| Tool | Description |
+|---|---|
+| `hh_get_my_resumes` | List all resumes |
+| `hh_get_resume` | Resume details by ID |
+| `hh_update_resume` | Update title, salary, about |
+
+### AI Analytics
+
+| Tool | Description |
+|---|---|
+| `hh_score_vacancy` | AI relevance scoring 0–100 |
+| `hh_market_analytics` | Salaries, top skills, top companies |
+| `hh_career_advisor` | Career report: gaps, roadmap, forecast |
+| `hh_skills_gap` | Skills you have vs. what's missing |
+| `hh_salary_forecast` | Salary forecast after learning new skills |
+| `hh_resume_optimizer` | Concrete resume improvement tips |
+
+### Monitoring
+
+| Tool | Description |
+|---|---|
+| `hh_start_monitor` | Start background response monitoring |
+| `hh_stop_monitor` | Stop monitoring |
+| `hh_check_monitor` | One-time status check |
 
 ---
 
-## MCP инструменты (19)
-
-### Поиск вакансий
-
-| Инструмент | Описание |
-|---|---|
-| `hh_search` | Поиск по тексту, зарплате, региону, удалёнке |
-| `hh_get_vacancy` | Детальная карточка вакансии по ID |
-| `hh_get_employer` | Информация о работодателе |
-| `hh_get_similar` | Похожие вакансии |
-
-### Отклики
-
-| Инструмент | Описание |
-|---|---|
-| `hh_apply_vacancy` | Откликнуться (письмо генерируется AI автоматически) |
-| `hh_get_applications` | История откликов и текущие статусы |
-| `hh_generate_letter` | Сгенерировать письмо без отправки |
-
-### Резюме
-
-| Инструмент | Описание |
-|---|---|
-| `hh_get_my_resumes` | Список всех резюме |
-| `hh_get_resume` | Детали резюме по ID |
-| `hh_update_resume` | Обновить должность, зарплату, "О себе" |
-
-### AI-аналитика
-
-| Инструмент | Описание |
-|---|---|
-| `hh_score_vacancy` | AI скоринг релевантности 0–100 |
-| `hh_market_analytics` | Зарплаты, топ-навыки, топ-компании по запросу |
-| `hh_career_advisor` | Карьерный отчёт: пробелы, дорожная карта, прогноз |
-| `hh_skills_gap` | Какие навыки есть / чего не хватает |
-| `hh_salary_forecast` | Прогноз зарплаты после изучения навыков |
-| `hh_resume_optimizer` | Конкретные рекомендации по улучшению резюме |
-
-### Мониторинг
-
-| Инструмент | Описание |
-|---|---|
-| `hh_start_monitor` | Запустить фоновый мониторинг ответов |
-| `hh_stop_monitor` | Остановить мониторинг |
-| `hh_check_monitor` | Разовая проверка изменений статусов |
-
----
-
-## Примеры промптов для Cline
+## Example Prompts for Cline
 
 ```
-Найди удалённые вакансии AI интегратор, зарплата от 100к
+Find remote AI integrator vacancies, salary from 100k
 ```
 
 ```
-Найди 20 вакансий по запросам "AI разработчик" и "внедрение AI".
-Оцени каждую через hh_score_vacancy.
-Выведи топ-10 с оценкой выше 65 с ссылками.
+Find 20 vacancies for "AI developer" and "AI integration".
+Score each via hh_score_vacancy.
+Show top-10 with score above 65 with links.
 ```
 
 ```
-Проанализируй рынок труда по запросу "AI интегратор" через hh_market_analytics
+Analyze the job market for "AI integrator" via hh_market_analytics
 ```
 
 ```
-Сгенерируй сопроводительное письмо для вакансии 131782229
+Generate a cover letter for vacancy 131782229
 ```
 
 ---
 
-## Автор
+## Tech Stack
 
-[Vadim Titov](https://github.com/Vadtop) · Telegram: @vadimka163
+Python · FastMCP · Playwright · Pydantic · scikit-learn · OpenRouter API · Docker
+
+---
+
+## Author
+
+[Vadim Titov](https://github.com/Vadtop)
