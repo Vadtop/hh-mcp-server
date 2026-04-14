@@ -77,9 +77,11 @@ Opens a browser — enter phone and SMS code. Session persists in `.browser_sess
 
 ---
 
-## Connecting to Cline (VS Code)
+## Connecting to AI Assistants
 
-Add to `cline_mcp_settings.json` (Settings → MCP Servers):
+Works with any MCP-compatible client: **opencode**, **Cline**, **Claude Desktop**, **Cursor**.
+
+Add to your MCP client config (e.g. `opencode.json` or `cline_mcp_settings.json`):
 
 ```json
 {
