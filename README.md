@@ -145,7 +145,7 @@ Add to your MCP client config (e.g. `opencode.json` or `cline_mcp_settings.json`
 
 ---
 
-## Example Prompts for Cline
+## Example Prompts
 
 ```
 Find remote AI integrator vacancies, salary from 100k
