@@ -78,8 +78,8 @@ python auth_once.py
   "mcpServers": {
     "hh-mcp": {
       "command": "python",
-      "args": ["c:/portfolio_2026/hh_mcp_server_v2/run_mcp.py"],
-      "cwd": "c:/portfolio_2026/hh_mcp_server_v2"
+      "args": ["/path/to/hh-mcp-server/run_mcp.py"],
+      "cwd": "/path/to/hh-mcp-server"
     }
   }
 }

@@ -13,3 +13,5 @@ web.log
 .env.local
 hh_mcp.log
 MCP_FIX_PLAN.md
+.applications_history.json
+apply_debug*.png

@@ -49,13 +49,18 @@ class LetterGenerator:
     2. Template-based — fallback без API ключа
     """
 
-    def __init__(self, openrouter_api_key: Optional[str] = None, model: str = "google/gemini-flash-1.5"):
+    def __init__(
+        self,
+        openrouter_api_key: Optional[str] = None,
+        model: str = "google/gemini-2.5-flash",
+    ):
         self.model = model
         self._client = None
 
         if openrouter_api_key:
             try:
                 from openai import OpenAI
+
                 self._client = OpenAI(
                     api_key=openrouter_api_key,
                     base_url="https://openrouter.ai/api/v1",
@@ -63,7 +68,7 @@ class LetterGenerator:
                 logger.info(f"OpenRouter клиент инициализирован, модель: {model}")
             except ImportError:
                 logger.warning("OpenAI пакет не установлен. Используем шаблоны.")
-    
+
     async def generate_letter(
         self,
         vacancy: VacancyDetail,
@@ -88,7 +93,7 @@ class LetterGenerator:
             return await self._generate_with_llm(vacancy, resume)
         else:
             return self._generate_from_template(vacancy, resume)
-    
+
     async def _generate_with_llm(
         self,
         vacancy: VacancyDetail,
@@ -146,7 +151,9 @@ class LetterGenerator:
             employer = getattr(vacancy, "employer", None)
             company = employer.name if employer else "Не указано"
             skills_list = getattr(vacancy, "skills_list", None) or []
-            vacancy_skills = ", ".join(skills_list[:10]) if skills_list else "не указаны"
+            vacancy_skills = (
+                ", ".join(skills_list[:10]) if skills_list else "не указаны"
+            )
             description = (getattr(vacancy, "description_plain", None) or "")[:600]
 
         resume_context = ""
@@ -168,7 +175,7 @@ class LetterGenerator:
 Сделай акцент на релевантных проектах кандидата. Упомяни конкретные технологии из стека, которые совпадают с требованиями вакансии."""
 
         return prompt
-    
+
     def _generate_from_template(
         self,
         vacancy: VacancyDetail,
@@ -192,10 +199,15 @@ class LetterGenerator:
             company_name = employer.name if employer else "вашей компании"
             vacancy_name = getattr(vacancy, "name", "")
 
-        contacts = " | ".join(filter(None, [
-            MY_GITHUB and f"GitHub: {MY_GITHUB}",
-            MY_TELEGRAM and f"Telegram: {MY_TELEGRAM}",
-        ]))
+        contacts = " | ".join(
+            filter(
+                None,
+                [
+                    MY_GITHUB and f"GitHub: {MY_GITHUB}",
+                    MY_TELEGRAM and f"Telegram: {MY_TELEGRAM}",
+                ],
+            )
+        )
 
         letter = f"""Здравствуйте!
 
@@ -212,15 +224,15 @@ class LetterGenerator:
 
         logger.info("Сопроводительное письмо сгенерировано из шаблона (fallback)")
         return letter.strip()
-    
+
     def generate_quick_letter(self, vacancy_name: str, company_name: str) -> str:
         """
         Генерирует быстрое короткое письмо.
-        
+
         Args:
             vacancy_name: Название вакансии
             company_name: Название компании
-            
+
         Returns:
             Краткое письмо
         """
@@ -231,7 +243,7 @@ class LetterGenerator:
 С уважением,
 Кандидат
 """
-    
+
     def generate_motivated_letter(
         self,
         vacancy: VacancyDetail,
@@ -240,17 +252,17 @@ class LetterGenerator:
     ) -> str:
         """
         Генерирует мотивированное письмо с конкретной причиной.
-        
+
         Args:
             vacancy: Вакансия
             motivation_reason: Причина интереса (например, "хочу работать с K8s")
             resume: Резюме
-            
+
         Returns:
             Письмо с мотивацией
         """
         company_name = vacancy.employer.name if vacancy.employer else "вашей компании"
-        
+
         letter = f"""Здравствуйте!
 
 Пишу вам по поводу вакансии "{vacancy.name}" в компании {company_name}.
@@ -264,16 +276,16 @@ class LetterGenerator:
 С уважением,
 {resume.full_name if resume else "Кандидат"}
 """
-        
+
         return letter.strip()
-    
+
     def format_letter_for_display(self, letter: str) -> str:
         """
         Форматирует письмо для отображения.
-        
+
         Args:
             letter: Письмо
-            
+
         Returns:
             Отформатированное письмо
         """
@@ -285,5 +297,5 @@ class LetterGenerator:
             f"📊 Слов: {len(letter.split())}",
             f"📏 Символов: {len(letter)}",
         ]
-        
+
         return "\n".join(lines)

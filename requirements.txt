@@ -34,3 +34,4 @@ tenacity>=8.2.0  # Retry logic
 python-dotenv>=1.0.0  # Environment variables
 pydantic>=2.5.0  # Data validation
 pydantic-settings>=2.1.0  # Settings management
+aiohttp>=3.9.0  # Async HTTP (Telegram notifications)

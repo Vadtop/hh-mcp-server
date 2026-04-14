@@ -23,18 +23,18 @@ class BrowserActions:
     """
     Действия в браузере с анти-детект мерами.
     """
-    
+
     def __init__(self, page: Page):
         self.page = page
         self.anti_detect = AntiDetect()
-    
+
     async def goto(self, url: str, wait_until: str = "domcontentloaded"):
         """
         Переход на URL с анти-детект задержкой.
         """
         await self.page.goto(url, wait_until=wait_until, timeout=60000)
         await self.anti_detect.random_delay()
-    
+
     async def scroll_to_bottom(self):
         """
         Плавно скроллит страницу до конца.
@@ -52,7 +52,7 @@ class BrowserActions:
             }
         """)
         await self.anti_detect.random_delay()
-    
+
     async def click_vacancy(self, vacancy_index: int = 0) -> bool:
         """
         Кликает на вакансию в результатах поиска.
@@ -65,7 +65,7 @@ class BrowserActions:
         except Exception as e:
             logger.error(f"Ошибка клика по вакансии: {e}")
             return False
-    
+
     async def click_apply_button(self, vacancy_index: int = 0) -> dict:
         """
         Кликает кнопку «Откликнуться» в карточке вакансии.
@@ -123,7 +123,9 @@ class BrowserActions:
             # Скриншот для диагностики (перезаписывается каждый раз)
             try:
                 await self.page.screenshot(path="apply_debug.png")
-                logger.info(f"Скриншот после клика: apply_debug.png | URL: {self.page.url}")
+                logger.info(
+                    f"Скриншот после клика: apply_debug.png | URL: {self.page.url}"
+                )
             except Exception:
                 pass
 
@@ -136,7 +138,7 @@ class BrowserActions:
                 'textarea[placeholder*="письм"]',
                 'textarea[placeholder*="Напишите"]',
                 'textarea[placeholder*="сопроводительн"]',
-                '.vacancy-response-letter',
+                ".vacancy-response-letter",
                 # hh.ru 2025-2026
                 '[class*="applicant-response"] textarea',
                 'div[class*="response-popup"] textarea',
@@ -144,18 +146,26 @@ class BrowserActions:
             for sel in letter_selectors:
                 if await self.page.locator(sel).count() > 0:
                     logger.debug(f"Найдено поле письма: {sel}")
-                    return {"success": False, "needs_letter": True, "has_questions": False}
+                    return {
+                        "success": False,
+                        "needs_letter": True,
+                        "has_questions": False,
+                    }
 
             # 2. Вопросы от работодателя
             question_selectors = [
                 '[data-qa="vacancy-questions"]',
                 '[data-qa="applicant-questions"]',
-                '.vacancy-questions',
+                ".vacancy-questions",
                 '[class*="employer-questions"]',
             ]
             for sel in question_selectors:
                 if await self.page.locator(sel).count() > 0:
-                    return {"success": False, "needs_letter": False, "has_questions": True}
+                    return {
+                        "success": False,
+                        "needs_letter": False,
+                        "has_questions": True,
+                    }
 
             # 3. Кнопка уже нажата / отклик отправлен (кнопка стала "Отклик отправлен")
             sent_selectors = [
@@ -170,7 +180,11 @@ class BrowserActions:
             ]
             for sel in sent_selectors:
                 if await self.page.locator(sel).count() > 0:
-                    return {"success": True, "needs_letter": False, "has_questions": False}
+                    return {
+                        "success": True,
+                        "needs_letter": False,
+                        "has_questions": False,
+                    }
 
             # 4. Snackbar / toast с подтверждением
             snackbar_selectors = [
@@ -187,7 +201,11 @@ class BrowserActions:
                     except Exception:
                         text = ""
                     if any(w in text.lower() for w in ["отклик", "отправ", "успешно"]):
-                        return {"success": True, "needs_letter": False, "has_questions": False}
+                        return {
+                            "success": True,
+                            "needs_letter": False,
+                            "has_questions": False,
+                        }
 
             # 5. Редирект на страницу отклика
             if any(w in self.page.url.lower() for w in ["response", "negotiations"]):
@@ -216,7 +234,11 @@ class BrowserActions:
                     # Проверяем успех после второго клика
                     for sent_sel in sent_selectors:
                         if await self.page.locator(sent_sel).count() > 0:
-                            return {"success": True, "needs_letter": False, "has_questions": False}
+                            return {
+                                "success": True,
+                                "needs_letter": False,
+                                "has_questions": False,
+                            }
                     for snack_sel in snackbar_selectors:
                         snack_loc = self.page.locator(snack_sel).first
                         if await snack_loc.count() > 0:
@@ -224,21 +246,40 @@ class BrowserActions:
                                 snack_text = await snack_loc.inner_text()
                             except Exception:
                                 snack_text = ""
-                            if any(w in snack_text.lower() for w in ["отклик", "отправ", "успешно"]):
-                                return {"success": True, "needs_letter": False, "has_questions": False}
-                    if any(w in self.page.url.lower() for w in ["response", "negotiations"]):
-                        return {"success": True, "needs_letter": False, "has_questions": False}
+                            if any(
+                                w in snack_text.lower()
+                                for w in ["отклик", "отправ", "успешно"]
+                            ):
+                                return {
+                                    "success": True,
+                                    "needs_letter": False,
+                                    "has_questions": False,
+                                }
+                    if any(
+                        w in self.page.url.lower() for w in ["response", "negotiations"]
+                    ):
+                        return {
+                            "success": True,
+                            "needs_letter": False,
+                            "has_questions": False,
+                        }
 
                     # Если после клика модалка пропала — считаем успехом
                     if await self.page.locator(sel).count() == 0:
-                        return {"success": True, "needs_letter": False, "has_questions": False}
+                        return {
+                            "success": True,
+                            "needs_letter": False,
+                            "has_questions": False,
+                        }
 
                     break
 
             # 7. Пагинация страницы не поменялась — делаем финальный скриншот
             try:
                 await self.page.screenshot(path="apply_debug_final.png")
-                logger.warning(f"Неизвестный результат. URL: {self.page.url} | Скриншот: apply_debug_final.png")
+                logger.warning(
+                    f"Неизвестный результат. URL: {self.page.url} | Скриншот: apply_debug_final.png"
+                )
             except Exception:
                 pass
 
@@ -247,7 +288,7 @@ class BrowserActions:
         except Exception as e:
             logger.error(f"Ошибка отклика: {e}")
             return {"success": False, "error": str(e)}
-    
+
     async def fill_cover_letter(self, letter: str) -> bool:
         """
         Заполняет и отправляет сопроводительное письмо в модальном окне.
@@ -263,7 +304,7 @@ class BrowserActions:
                 'textarea[placeholder*="письм"]',
                 'textarea[placeholder*="Напишите"]',
                 'textarea[placeholder*="сопроводительн"]',
-                '.vacancy-response-letter textarea',
+                ".vacancy-response-letter textarea",
                 '[class*="applicant-response"] textarea',
                 'div[class*="response-popup"] textarea',
             ]
@@ -336,7 +377,9 @@ class BrowserActions:
                 return True
             except PlaywrightTimeout:
                 # Snackbar не появился — проверяем URL
-                if any(w in self.page.url.lower() for w in ["response", "negotiations"]):
+                if any(
+                    w in self.page.url.lower() for w in ["response", "negotiations"]
+                ):
                     logger.info("Отклик отправлен (редирект)")
                     return True
                 logger.warning("Не удалось подтвердить отправку отклика")
@@ -345,7 +388,7 @@ class BrowserActions:
         except Exception as e:
             logger.error(f"Ошибка заполнения письма: {e}")
             return False
-    
+
     async def search_vacancies(self, query: str, filters: dict = None) -> bool:
         """
         Выполняет поиск вакансий.
@@ -353,24 +396,26 @@ class BrowserActions:
         try:
             # Переходим на hh.ru
             await self.goto("https://hh.ru/search/vacancy")
-            
+
             # Находим поле поиска
             search_input = self.page.locator('[data-qa="search-bar-input"]')
             await search_input.fill(query)
             await self.anti_detect.random_delay()
-            
+
             # Нажимаем Enter или кнопку поиска
             await self.page.keyboard.press("Enter")
             await self.anti_detect.random_delay()
-            
+
             # Ждём результаты
-            await self.page.wait_for_selector('[data-qa="search-result-item"]', timeout=15000)
-            
+            await self.page.wait_for_selector(
+                '[data-qa="search-result-item"]', timeout=15000
+            )
+
             return True
         except Exception as e:
             logger.error(f"Ошибка поиска: {e}")
             return False
-    
+
     async def navigate_to_resumes(self) -> bool:
         """Переход на страницу резюме."""
         try:
@@ -379,7 +424,7 @@ class BrowserActions:
         except Exception as e:
             logger.error(f"Ошибка навигации к резюме: {e}")
             return False
-    
+
     async def navigate_to_applications(self) -> bool:
         """Переход на страницу откликов."""
         try:
@@ -388,7 +433,7 @@ class BrowserActions:
         except Exception as e:
             logger.error(f"Ошибка навигации к откликам: {e}")
             return False
-    
+
     async def close_modal(self) -> bool:
         """Закрывает модальное окно."""
         try:
@@ -398,23 +443,23 @@ class BrowserActions:
                 await self.anti_detect.random_delay()
                 return True
             return False
-        except:
+        except Exception:
             return False
-    
+
     async def go_back(self) -> bool:
         """Возврат на предыдущую страницу."""
         try:
             await self.page.go_back()
             await self.anti_detect.random_delay()
             return True
-        except:
+        except Exception:
             return False
-    
+
     async def go_forward(self) -> bool:
         """Переход вперёд."""
         try:
             await self.page.go_forward()
             await self.anti_detect.random_delay()
             return True
-        except:
+        except Exception:
             return False

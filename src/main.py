@@ -35,7 +35,9 @@ from src.ai.career_advisor import CareerAdvisor
 from src.services.monitor import MonitorService
 
 # Логирование
-logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(name)s: %(message)s")
+logging.basicConfig(
+    level=logging.INFO, format="%(asctime)s [%(levelname)s] %(name)s: %(message)s"
+)
 logger = logging.getLogger(__name__)
 
 # MCP сервер
@@ -43,6 +45,7 @@ mcp = FastMCP(APP_NAME)
 
 # Глобальные объекты
 _browser: Optional[BrowserEngine] = None
+_browser_started: bool = False
 _vacancy_service: Optional[VacancyService] = None
 _resume_service: Optional[ResumeService] = None
 _apply_service: Optional[ApplyService] = None
@@ -53,31 +56,34 @@ _career_advisor: Optional[CareerAdvisor] = None
 _monitor: Optional[MonitorService] = None
 
 
-def get_browser() -> BrowserEngine:
-    global _browser
+async def get_browser() -> BrowserEngine:
+    global _browser, _browser_started
     if _browser is None:
-        _browser = BrowserEngine(headless=True, slow_mo=50)
+        _browser = BrowserEngine(headless=True, slow_mo=0)
+    if not _browser_started:
+        await _browser.start()
+        _browser_started = True
     return _browser
 
 
-def get_vacancy_service() -> VacancyService:
+async def get_vacancy_service() -> VacancyService:
     global _vacancy_service
     if _vacancy_service is None:
-        _vacancy_service = VacancyService(get_browser())
+        _vacancy_service = VacancyService(await get_browser())
     return _vacancy_service
 
 
-def get_resume_service() -> ResumeService:
+async def get_resume_service() -> ResumeService:
     global _resume_service
     if _resume_service is None:
-        _resume_service = ResumeService(get_browser())
+        _resume_service = ResumeService(await get_browser())
     return _resume_service
 
 
-def get_apply_service() -> ApplyService:
+async def get_apply_service() -> ApplyService:
     global _apply_service
     if _apply_service is None:
-        _apply_service = ApplyService(get_browser())
+        _apply_service = ApplyService(await get_browser())
     return _apply_service
 
 
@@ -91,7 +97,9 @@ def get_ai_scorer() -> AIVacancyScorer:
 def get_letter_gen() -> LetterGenerator:
     global _letter_gen
     if _letter_gen is None:
-        _letter_gen = LetterGenerator(openrouter_api_key=OPENROUTER_API_KEY, model=AI_MODEL)
+        _letter_gen = LetterGenerator(
+            openrouter_api_key=OPENROUTER_API_KEY, model=AI_MODEL
+        )
     return _letter_gen
 
 
@@ -109,16 +117,19 @@ def get_career_advisor() -> CareerAdvisor:
     return _career_advisor
 
 
-def get_monitor(interval: int = 300) -> MonitorService:
+async def get_monitor(interval: int = 300) -> MonitorService:
     global _monitor
     if _monitor is None:
-        _monitor = MonitorService(apply_service=get_apply_service(), interval=interval)
+        _monitor = MonitorService(
+            apply_service=await get_apply_service(), interval=interval
+        )
     return _monitor
 
 
 # ============================================================================
 # MCP TOOLS: Вакансии (1-6)
 # ============================================================================
+
 
 @mcp.tool()
 async def hh_search(
@@ -143,7 +154,7 @@ async def hh_search(
     Returns:
         Результаты поиска
     """
-    service = get_vacancy_service()
+    service = await get_vacancy_service()
 
     result = await service.search(
         text=text,
@@ -153,34 +164,34 @@ async def hh_search(
         page=page,
         per_page=per_page,
     )
-    
+
     if "error" in result:
         return f"❌ Ошибка: {result['error']}"
-    
+
     vacancies = result.get("vacancies", [])
-    
+
     if not vacancies:
         return f"🔍 По запросу '{text}' ничего не найдено"
-    
+
     lines = [
         f"🔍 Поиск: {text}",
         f"📊 Найдено: {len(vacancies)} вакансий",
         f"📄 Страница {result.get('page', 0) + 1}",
         "",
     ]
-    
+
     for i, v in enumerate(vacancies[:10], 1):
         lines.append(f"{i}. {v.get('title', '')}")
-        if v.get('company'):
+        if v.get("company"):
             lines.append(f"   🏢 {v['company']}")
-        if v.get('salary'):
+        if v.get("salary"):
             lines.append(f"   💰 {v['salary']}")
-        if v.get('location'):
+        if v.get("location"):
             lines.append(f"   📍 {v['location']}")
-        if v.get('url'):
+        if v.get("url"):
             lines.append(f"   🔗 {v['url']}")
         lines.append("")
-    
+
     return "\n".join(lines)
 
 
@@ -188,45 +199,45 @@ async def hh_search(
 async def hh_get_vacancy(vacancy_id: str) -> str:
     """
     Получить детальную информацию о вакансии.
-    
+
     Args:
         vacancy_id: ID вакансии
-    
+
     Returns:
         Детали вакансии
     """
-    service = get_vacancy_service()
+    service = await get_vacancy_service()
     vacancy = await service.get_vacancy(vacancy_id)
-    
+
     if "error" in vacancy:
         return f"❌ Ошибка: {vacancy['error']}"
-    
+
     lines = [
         f"📌 {vacancy.get('title', '')}",
-        f"{'='*50}",
+        f"{'=' * 50}",
     ]
-    
-    if vacancy.get('company'):
+
+    if vacancy.get("company"):
         lines.append(f"🏢 {vacancy['company']}")
-    if vacancy.get('salary'):
+    if vacancy.get("salary"):
         lines.append(f"💰 {vacancy['salary']}")
-    if vacancy.get('experience'):
+    if vacancy.get("experience"):
         lines.append(f"💼 Опыт: {vacancy['experience']}")
-    if vacancy.get('employment'):
+    if vacancy.get("employment"):
         lines.append(f"📋 {vacancy['employment']}")
-    if vacancy.get('location'):
+    if vacancy.get("location"):
         lines.append(f"📍 {vacancy['location']}")
-    
-    if vacancy.get('skills'):
+
+    if vacancy.get("skills"):
         lines.append("")
         lines.append("🔧 Навыки:")
-        for skill in vacancy['skills'][:10]:
+        for skill in vacancy["skills"][:10]:
             lines.append(f"   • {skill}")
-    
-    if vacancy.get('url'):
+
+    if vacancy.get("url"):
         lines.append("")
         lines.append(f"🔗 {vacancy['url']}")
-    
+
     return "\n".join(lines)
 
 
@@ -234,27 +245,27 @@ async def hh_get_vacancy(vacancy_id: str) -> str:
 async def hh_get_employer(employer_id: str) -> str:
     """
     Получить информацию о компании/работодателе.
-    
+
     Args:
         employer_id: ID работодателя
-    
+
     Returns:
         Информация о компании
     """
-    service = get_vacancy_service()
+    service = await get_vacancy_service()
     employer = await service.get_employer(employer_id)
-    
+
     if "error" in employer:
         return f"❌ Ошибка: {employer['error']}"
-    
+
     lines = [
         f"🏢 {employer.get('name', 'Неизвестно')}",
-        f"{'='*50}",
+        f"{'=' * 50}",
     ]
-    
-    if employer.get('description'):
-        lines.append(employer['description'][:500])
-    
+
+    if employer.get("description"):
+        lines.append(employer["description"][:500])
+
     return "\n".join(lines)
 
 
@@ -262,29 +273,29 @@ async def hh_get_employer(employer_id: str) -> str:
 async def hh_get_similar(vacancy_id: str) -> str:
     """
     Найти похожие вакансии.
-    
+
     Args:
         vacancy_id: ID вакансии
-    
+
     Returns:
         Похожие вакансии
     """
-    service = get_vacancy_service()
+    service = await get_vacancy_service()
     similar = await service.get_similar(vacancy_id)
-    
+
     if not similar:
         return "Похожих вакансий не найдено"
-    
+
     lines = [f"🔍 Похожие вакансии ({len(similar)}):", ""]
-    
+
     for i, v in enumerate(similar[:5], 1):
         lines.append(f"{i}. {v.get('title', '')}")
-        if v.get('company'):
+        if v.get("company"):
             lines.append(f"   🏢 {v['company']}")
-        if v.get('salary'):
+        if v.get("salary"):
             lines.append(f"   💰 {v['salary']}")
         lines.append("")
-    
+
     return "\n".join(lines)
 
 
@@ -304,32 +315,33 @@ async def hh_get_dictionaries() -> str:
 # MCP TOOLS: Резюме (7-9)
 # ============================================================================
 
+
 @mcp.tool()
 async def hh_get_my_resumes() -> str:
     """
     Получить список своих резюме.
-    
+
     Returns:
         Список резюме
     """
-    service = get_resume_service()
+    service = await get_resume_service()
     resumes = await service.get_my_resumes()
-    
+
     if not resumes:
         return "Резюме не найдены"
-    
+
     lines = [f"📄 Мои резюме ({len(resumes)}):", ""]
-    
+
     for r in resumes:
         lines.append(f"• {r.get('title', '')}")
-        if r.get('status'):
+        if r.get("status"):
             lines.append(f"  📊 {r['status']}")
-        if r.get('updated'):
+        if r.get("updated"):
             lines.append(f"  📅 {r['updated']}")
-        if r.get('url'):
+        if r.get("url"):
             lines.append(f"  🔗 {r['url']}")
         lines.append("")
-    
+
     return "\n".join(lines)
 
 
@@ -337,41 +349,41 @@ async def hh_get_my_resumes() -> str:
 async def hh_get_resume(resume_id: str) -> str:
     """
     Получить детальную информацию о резюме.
-    
+
     Args:
         resume_id: ID резюме
-    
+
     Returns:
         Детали резюме
     """
-    service = get_resume_service()
+    service = await get_resume_service()
     resume = await service.get_resume(resume_id)
-    
+
     if "error" in resume:
         return f"❌ Ошибка: {resume['error']}"
-    
+
     lines = [
         f"📄 {resume.get('title', '')}",
-        f"{'='*50}",
+        f"{'=' * 50}",
     ]
-    
-    if resume.get('name'):
+
+    if resume.get("name"):
         lines.append(f"👤 {resume['name']}")
-    if resume.get('salary'):
+    if resume.get("salary"):
         lines.append(f"💰 {resume['salary']}")
-    
-    if resume.get('skills'):
+
+    if resume.get("skills"):
         lines.append("")
         lines.append("🔧 Навыки:")
-        for skill in resume['skills'][:10]:
+        for skill in resume["skills"][:10]:
             lines.append(f"   • {skill}")
-    
-    if resume.get('experience'):
+
+    if resume.get("experience"):
         lines.append("")
         lines.append("💼 Опыт:")
-        for exp in resume['experience'][:3]:
+        for exp in resume["experience"][:3]:
             lines.append(f"   • {exp}")
-    
+
     return "\n".join(lines)
 
 
@@ -384,22 +396,22 @@ async def hh_update_resume(
 ) -> str:
     """
     Обновить резюме.
-    
+
     Args:
         resume_id: ID резюме
         title: Новая должность
         salary: Новая зарплата
         about: Новый раздел "О себе"
-    
+
     Returns:
         Результат обновления
     """
-    service = get_resume_service()
+    service = await get_resume_service()
     result = await service.update_resume(resume_id, title, salary, about)
-    
+
     if "error" in result:
         return f"❌ Ошибка: {result['error']}"
-    
+
     return f"✅ Резюме обновлено!"
 
 
@@ -407,13 +419,14 @@ async def hh_update_resume(
 # MCP TOOLS: Отклики (10-11)
 # ============================================================================
 
+
 @mcp.tool()
 async def hh_apply_vacancy(
     vacancy_id: str,
     cover_letter: Optional[str] = None,
 ) -> str:
     """
-    Откликнуться на вакансию. Если вакансия требует письмо — генерирует автоматически.
+    Откликнуться на вакансию. Письмо генерируется автоматически через AI.
 
     Args:
         vacancy_id: ID вакансии
@@ -422,21 +435,20 @@ async def hh_apply_vacancy(
     Returns:
         Результат отклика
     """
-    service = get_apply_service()
-    result = await service.apply(vacancy_id, cover_letter)
-
-    # Вакансия требует письмо — генерируем и повторяем
-    if result.get("needs_letter") and not cover_letter:
-        logger.info(f"Вакансия {vacancy_id} требует письмо — генерируем через AI")
+    # Если письмо не передано — генерируем всегда
+    if not cover_letter:
         try:
-            vacancy_service = get_vacancy_service()
+            vacancy_service = await get_vacancy_service()
             vacancy = await vacancy_service.get_vacancy(vacancy_id)
             letter_gen = get_letter_gen()
-            cover_letter = await letter_gen.generate_letter(vacancy=vacancy)
-            # Повторяем отклик с письмом
-            result = await service.apply(vacancy_id, cover_letter)
+            cover_letter = await letter_gen.generate_letter(
+                vacancy=vacancy, resume=None
+            )
         except Exception as e:
-            return f"❌ Не удалось сгенерировать письмо: {e}"
+            logger.warning(f"Не удалось сгенерировать письмо: {e}")
+
+    service = await get_apply_service()
+    result = await service.apply(vacancy_id, cover_letter)
 
     if "error" in result:
         return f"❌ Ошибка: {result['error']}"
@@ -456,36 +468,37 @@ async def hh_apply_vacancy(
 async def hh_get_applications() -> str:
     """
     Получить историю откликов.
-    
+
     Returns:
         История откликов
     """
-    service = get_apply_service()
+    service = await get_apply_service()
     applications = await service.get_applications()
-    
+
     if not applications:
         return "Активных откликов нет"
-    
+
     lines = [f"📬 Активные отклики ({len(applications)}):", ""]
-    
+
     for app in applications[:10]:
         lines.append(f"📌 {app.get('title', '')}")
-        if app.get('company'):
+        if app.get("company"):
             lines.append(f"   🏢 {app['company']}")
-        if app.get('status'):
+        if app.get("status"):
             lines.append(f"   📊 {app['status']}")
-        if app.get('date'):
+        if app.get("date"):
             lines.append(f"   📅 {app['date']}")
-        if app.get('url'):
+        if app.get("url"):
             lines.append(f"   🔗 {app['url']}")
         lines.append("")
-    
+
     return "\n".join(lines)
 
 
 # ============================================================================
 # MCP TOOLS: AI (12-19)
 # ============================================================================
+
 
 @mcp.tool()
 async def hh_score_vacancy(
@@ -495,27 +508,27 @@ async def hh_score_vacancy(
 ) -> str:
     """
     Оценить релевантность вакансии (AI скоринг 0-100).
-    
+
     Args:
         vacancy_id: ID вакансии
         resume_id: ID резюме (для персонализации)
         expected_salary: Ожидаемая зарплата
-    
+
     Returns:
         Оценка релевантности
     """
-    vacancy_service = get_vacancy_service()
+    vacancy_service = await get_vacancy_service()
     vacancy = await vacancy_service.get_vacancy(vacancy_id)
-    
+
     if "error" in vacancy:
         return f"❌ Ошибка: {vacancy['error']}"
-    
+
     scorer = get_ai_scorer()
     scored = scorer.score_vacancy(vacancy, expected_salary=expected_salary)
 
     lines = [
         f"📊 AI Скоринг: {vacancy.get('title', '')}",
-        f"{'='*50}",
+        f"{'=' * 50}",
         f"",
         f"🎯 Score: {scored.score}/100 — {scored.score_comment}",
         f"",
@@ -536,25 +549,25 @@ async def hh_generate_letter(
 ) -> str:
     """
     Сгенерировать сопроводительное письмо с AI.
-    
+
     Args:
         vacancy_id: ID вакансии
         resume_id: ID резюме (для персонализации)
-    
+
     Returns:
         Сопроводительное письмо
     """
-    vacancy_service = get_vacancy_service()
+    vacancy_service = await get_vacancy_service()
     vacancy = await vacancy_service.get_vacancy(vacancy_id)
-    
+
     if "error" in vacancy:
         return f"❌ Ошибка: {vacancy['error']}"
-    
+
     letter_gen = get_letter_gen()
-    
+
     # TODO: Получить резюме если передан resume_id
     letter = await letter_gen.generate_letter(vacancy=vacancy, resume=None)
-    
+
     return letter_gen.format_letter_for_display(letter)
 
 
@@ -572,7 +585,7 @@ async def hh_market_analytics(text: str = "AI разработчик") -> str:
     from src.ai.scorer import _parse_salary_string
     from collections import Counter
 
-    vacancy_service = get_vacancy_service()
+    vacancy_service = await get_vacancy_service()
     result = await vacancy_service.search(text=text, per_page=20)
 
     if "error" in result:
@@ -605,17 +618,21 @@ async def hh_market_analytics(text: str = "AI разработчик") -> str:
     total = len(vacancies)
     lines = [
         f"📊 Анализ рынка: {text}",
-        f"{'='*50}",
-        f"📈 Вакансий: {total} | 🏠 Удалённых: {remote_count} ({round(remote_count/total*100)}%)",
+        f"{'=' * 50}",
+        f"📈 Вакансий: {total} | 🏠 Удалённых: {remote_count} ({round(remote_count / total * 100)}%)",
         "",
     ]
 
     # Зарплаты
     lines.append("💰 Зарплаты:")
     if salaries_from:
-        lines.append(f"   От: мин {min(salaries_from):,} / средн {sum(salaries_from)//len(salaries_from):,} / макс {max(salaries_from):,} ₽")
+        lines.append(
+            f"   От: мин {min(salaries_from):,} / средн {sum(salaries_from) // len(salaries_from):,} / макс {max(salaries_from):,} ₽"
+        )
     if salaries_to:
-        lines.append(f"   До: мин {min(salaries_to):,} / средн {sum(salaries_to)//len(salaries_to):,} / макс {max(salaries_to):,} ₽")
+        lines.append(
+            f"   До: мин {min(salaries_to):,} / средн {sum(salaries_to) // len(salaries_to):,} / макс {max(salaries_to):,} ₽"
+        )
     if not salaries_from and not salaries_to:
         lines.append("   Зарплата не указана в большинстве вакансий")
 
@@ -623,7 +640,7 @@ async def hh_market_analytics(text: str = "AI разработчик") -> str:
     if skills_counter:
         lines += ["", "🔧 Топ-10 навыков:"]
         for skill, count in skills_counter.most_common(10):
-            lines.append(f"   • {skill.title()} — {round(count/total*100)}%")
+            lines.append(f"   • {skill.title()} — {round(count / total * 100)}%")
 
     # Топ компании
     if companies:
@@ -648,7 +665,7 @@ async def hh_start_monitor(interval: int = 300) -> str:
     Returns:
         Статус запуска
     """
-    monitor = get_monitor(interval=interval)
+    monitor = await get_monitor(interval=interval)
     return await monitor.start()
 
 
@@ -660,7 +677,7 @@ async def hh_stop_monitor() -> str:
     Returns:
         Статус остановки
     """
-    monitor = get_monitor()
+    monitor = await get_monitor()
     return await monitor.stop()
 
 
@@ -672,12 +689,14 @@ async def hh_check_monitor() -> str:
     Returns:
         Список изменений или "Изменений нет"
     """
-    monitor = get_monitor()
+    monitor = await get_monitor()
     return await monitor.check_now()
 
 
 @mcp.tool()
-async def hh_career_advisor(resume_id: str, vacancy_text: str = "AI разработчик") -> str:
+async def hh_career_advisor(
+    resume_id: str, vacancy_text: str = "AI разработчик"
+) -> str:
     """
     AI Карьерный советник — анализ резюме vs целевые вакансии.
 
@@ -690,13 +709,13 @@ async def hh_career_advisor(resume_id: str, vacancy_text: str = "AI разраб
     """
     from src.config import MY_SKILLS, MY_EXPECTED_SALARY
 
-    resume_service = get_resume_service()
+    resume_service = await get_resume_service()
     resume = await resume_service.get_resume(resume_id)
 
     if "error" in resume:
         return f"❌ Ошибка: {resume['error']}"
 
-    vacancy_service = get_vacancy_service()
+    vacancy_service = await get_vacancy_service()
     result = await vacancy_service.search(text=vacancy_text, per_page=20)
     vacancies = result.get("vacancies", [])
 
@@ -708,6 +727,7 @@ async def hh_career_advisor(resume_id: str, vacancy_text: str = "AI разраб
 
     # Собираем навыки из вакансий
     from collections import Counter
+
     vacancy_skills_counter = Counter()
     for v in vacancies:
         for s in v.get("skills", []):
@@ -716,8 +736,16 @@ async def hh_career_advisor(resume_id: str, vacancy_text: str = "AI разраб
     total = len(vacancies) or 1
     my_skills_lower = set(s.lower() for s in all_skills)
 
-    matched = [(s, c) for s, c in vacancy_skills_counter.most_common(30) if s in my_skills_lower]
-    missing = [(s, c) for s, c in vacancy_skills_counter.most_common(30) if s not in my_skills_lower]
+    matched = [
+        (s, c)
+        for s, c in vacancy_skills_counter.most_common(30)
+        if s in my_skills_lower
+    ]
+    missing = [
+        (s, c)
+        for s, c in vacancy_skills_counter.most_common(30)
+        if s not in my_skills_lower
+    ]
 
     lines = [
         "🎯 AI Карьерный советник",
@@ -775,13 +803,13 @@ async def hh_skills_gap(resume_id: str, vacancy_text: str = "AI разработ
     from src.config import MY_SKILLS
     from collections import Counter
 
-    resume_service = get_resume_service()
+    resume_service = await get_resume_service()
     resume = await resume_service.get_resume(resume_id)
 
     if "error" in resume:
         return f"❌ Ошибка: {resume['error']}"
 
-    vacancy_service = get_vacancy_service()
+    vacancy_service = await get_vacancy_service()
     result = await vacancy_service.search(text=vacancy_text, per_page=20)
     vacancies = result.get("vacancies", [])
 
@@ -806,14 +834,14 @@ async def hh_skills_gap(resume_id: str, vacancy_text: str = "AI разработ
 
     lines = [
         f"🔧 Анализ пробелов в навыках",
-        f"{'='*50}",
+        f"{'=' * 50}",
         f"🔍 Запрос: {vacancy_text} ({total} вакансий)",
         f"📊 Покрытие навыков: {match_pct}%",
         "",
         f"✅ Есть ({len(matched)}):",
     ]
     for skill, count in matched[:10]:
-        lines.append(f"   • {skill.title()} — {round(count/total*100)}% вакансий")
+        lines.append(f"   • {skill.title()} — {round(count / total * 100)}% вакансий")
 
     lines += ["", f"❌ Не хватает ({len(missing)}):"]
     advisor = get_career_advisor()
@@ -827,7 +855,9 @@ async def hh_skills_gap(resume_id: str, vacancy_text: str = "AI разработ
 
 
 @mcp.tool()
-async def hh_resume_optimizer(resume_id: str, vacancy_text: str = "AI разработчик") -> str:
+async def hh_resume_optimizer(
+    resume_id: str, vacancy_text: str = "AI разработчик"
+) -> str:
     """
     Оптимизировать резюме — конкретные рекомендации на основе реальных вакансий.
 
@@ -841,13 +871,13 @@ async def hh_resume_optimizer(resume_id: str, vacancy_text: str = "AI разра
     from src.config import MY_SKILLS, MY_GITHUB
     from collections import Counter
 
-    resume_service = get_resume_service()
+    resume_service = await get_resume_service()
     resume = await resume_service.get_resume(resume_id)
 
     if "error" in resume:
         return f"❌ Ошибка: {resume['error']}"
 
-    vacancy_service = get_vacancy_service()
+    vacancy_service = await get_vacancy_service()
     result = await vacancy_service.search(text=vacancy_text, per_page=20)
     vacancies = result.get("vacancies", [])
 
@@ -897,7 +927,9 @@ async def hh_resume_optimizer(resume_id: str, vacancy_text: str = "AI разра
 
     # 3. GitHub
     if MY_GITHUB and MY_GITHUB not in about:
-        lines.append(f"   {n}. Добавьте ссылку на GitHub ({MY_GITHUB}) в раздел 'О себе' или контакты")
+        lines.append(
+            f"   {n}. Добавьте ссылку на GitHub ({MY_GITHUB}) в раздел 'О себе' или контакты"
+        )
         n += 1
 
     # 4. Метрики в опыте
@@ -930,32 +962,32 @@ async def hh_salary_forecast(
 ) -> str:
     """
     Прогноз зарплаты после изучения новых навыков.
-    
+
     Args:
         current_salary: Текущая зарплата
         skills: Список навыков через запятую
         timeline_months: Таймлайн в месяцах
-    
+
     Returns:
         Прогноз зарплаты
     """
     advisor = get_career_advisor()
-    
+
     skills_list = [s.strip() for s in skills.split(",")]
-    
+
     forecast = advisor.forecast_salary(
         current_salary=current_salary,
         current_skills=[],
         target_skills=skills_list,
         timeline_months=timeline_months,
     )
-    
+
     if "error" in forecast:
         return f"❌ {forecast['error']}"
-    
+
     lines = [
         f"💰 Прогноз зарплаты",
-        f"{'='*50}",
+        f"{'=' * 50}",
         f"",
         f"📊 Текущая зарплата: {forecast['current_salary']:,} ₽",
         f"🎯 Потенциальная: {forecast['forecast_salary']:,} ₽",
@@ -963,12 +995,14 @@ async def hh_salary_forecast(
         f"📅 Таймлайн: {forecast['timeline_months']} месяцев",
         f"",
     ]
-    
+
     if forecast.get("milestones"):
         lines.append("📚 Вехи:")
         for m in forecast["milestones"]:
-            lines.append(f"   Месяц {m['month']}: {m['skill'].title()} → {m['new_salary']:,} ₽")
-    
+            lines.append(
+                f"   Месяц {m['month']}: {m['skill'].title()} → {m['new_salary']:,} ₽"
+            )
+
     return "\n".join(lines)
 
 

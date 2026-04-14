@@ -1,0 +1,10 @@
+services:
+  mcp-server:
+    build: .
+    env_file: .env
+    volumes:
+      - browser_session:/app/.browser_session
+    restart: unless-stopped
+
+volumes:
+  browser_session:
