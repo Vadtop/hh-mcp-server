@@ -8,13 +8,12 @@ AI-генератор сопроводительных писем.
 - Fallback на шаблоны без LLM
 """
 
+import asyncio
 import logging
-from typing import Optional
-from datetime import datetime
 
-from src.models.vacancy import VacancyDetail
+from src.config import MY_GITHUB, MY_NAME, MY_RESUME_TEXT, MY_TELEGRAM
 from src.models.resume import ResumeDetail
-from src.config import MY_RESUME_TEXT, MY_SKILLS, MY_GITHUB, MY_TELEGRAM, MY_NAME
+from src.models.vacancy import VacancyDetail
 
 logger = logging.getLogger(__name__)
 
@@ -51,28 +50,29 @@ class LetterGenerator:
 
     def __init__(
         self,
-        openrouter_api_key: Optional[str] = None,
-        model: str = "google/gemini-2.5-flash",
+        openrouter_api_key: str | None = None,
+        model: str = "z-ai/glm-4.6",
     ):
         self.model = model
         self._client = None
 
         if openrouter_api_key:
             try:
-                from openai import OpenAI
+                from openai import AsyncOpenAI
 
-                self._client = OpenAI(
+                self._client = AsyncOpenAI(
                     api_key=openrouter_api_key,
                     base_url="https://openrouter.ai/api/v1",
+                    timeout=30.0,
                 )
-                logger.info(f"OpenRouter клиент инициализирован, модель: {model}")
+                logger.info(f"AsyncOpenRouter клиент инициализирован, модель: {model}")
             except ImportError:
                 logger.warning("OpenAI пакет не установлен. Используем шаблоны.")
 
     async def generate_letter(
         self,
         vacancy: VacancyDetail,
-        resume: Optional[ResumeDetail] = None,
+        resume: ResumeDetail | None = None,
         personalize: bool = True,
     ) -> str:
         """
@@ -97,7 +97,7 @@ class LetterGenerator:
     async def _generate_with_llm(
         self,
         vacancy: VacancyDetail,
-        resume: Optional[ResumeDetail] = None,
+        resume: ResumeDetail | None = None,
     ) -> str:
         """
         Генерирует письмо через LLM (OpenRouter).
@@ -115,14 +115,18 @@ class LetterGenerator:
         prompt = self._build_llm_prompt(vacancy, resume)
 
         try:
-            response = self._client.chat.completions.create(
-                model=self.model,
-                messages=[
-                    {"role": "system", "content": _build_profile_prompt()},
-                    {"role": "user", "content": prompt},
-                ],
-                temperature=0.7,
-                max_tokens=600,
+            response = await asyncio.wait_for(
+                self._client.chat.completions.create(
+                    model=self.model,
+                    messages=[
+                        {"role": "system", "content": _build_profile_prompt()},
+                        {"role": "user", "content": prompt},
+                    ],
+                    temperature=0.7,
+                    max_tokens=600,
+                    timeout=30.0,
+                ),
+                timeout=35.0,
             )
 
             letter = response.choices[0].message.content.strip()
@@ -179,7 +183,7 @@ class LetterGenerator:
     def _generate_from_template(
         self,
         vacancy: VacancyDetail,
-        resume: Optional[ResumeDetail] = None,
+        resume: ResumeDetail | None = None,
     ) -> str:
         """
         Fallback — генерирует письмо из шаблона с профилем кандидата.
@@ -248,7 +252,7 @@ class LetterGenerator:
         self,
         vacancy: VacancyDetail,
         motivation_reason: str,
-        resume: Optional[ResumeDetail] = None,
+        resume: ResumeDetail | None = None,
     ) -> str:
         """
         Генерирует мотивированное письмо с конкретной причиной.
@@ -279,16 +283,20 @@ class LetterGenerator:
 
         return letter.strip()
 
-    def format_letter_for_display(self, letter: str) -> str:
+    def format_letter_for_display(self, letter: str, for_llm: bool = False) -> str:
         """
         Форматирует письмо для отображения.
 
         Args:
             letter: Письмо
+            for_llm: Если True — чистый текст без декораций
 
         Returns:
             Отформатированное письмо
         """
+        if for_llm:
+            return letter
+
         lines = [
             "📝 Сопроводительное письмо:",
             "─" * 40,

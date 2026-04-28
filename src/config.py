@@ -45,7 +45,7 @@ CACHE_ENABLED = os.getenv("CACHE_ENABLED", "true").lower() == "true"
 # OpenRouter (совместим с OpenAI API)
 OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY", "")
 OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1"
-AI_MODEL = os.getenv("AI_MODEL", "google/gemini-2.5-flash")
+AI_MODEL = os.getenv("AI_MODEL", "z-ai/glm-4.6")
 AI_TEMPERATURE = float(os.getenv("AI_TEMPERATURE", "0.7"))
 
 # === My Profile (для персональных писем и скоринга) ===
@@ -61,12 +61,11 @@ _skills_env = os.getenv("MY_SKILLS", "")
 MY_SKILLS: list[str] = (
     [s.strip() for s in _skills_env.split(",") if s.strip()]
     if _skills_env
-    else [
-        "python", "fastapi", "langchain", "chromadb", "n8n",
-        "openai", "claude", "deepseek", "docker", "playwright",
-        "rag", "llm", "mcp", "multi-agent",
-    ]
+    else []
 )
+if not MY_SKILLS:
+    import logging as _logging
+    _logging.getLogger(__name__).warning("MY_SKILLS не задан в .env, скоринг навыков отключён")
 
 # Текст резюме для промпта — из .env или дефолтный безличный
 MY_RESUME_TEXT = os.getenv(

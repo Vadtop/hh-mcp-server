@@ -8,20 +8,16 @@ Playwright Browser Engine.
 - Контекст браузера с настройками анти-детекта
 """
 
-import os
 import json
-import asyncio
 import logging
 from pathlib import Path
-from typing import Optional
-from datetime import datetime
 
 from playwright.async_api import (
-    async_playwright,
     Browser,
     BrowserContext,
     Page,
     Playwright,
+    async_playwright,
 )
 
 from src.config import BASE_DIR
@@ -44,9 +40,9 @@ class BrowserEngine:
     def __init__(
         self,
         headless: bool = True,
-        slow_mo: int = 50,
+        slow_mo: int = 0,
         timeout: int = 30000,
-        user_data_dir: Optional[str] = None,
+        user_data_dir: str | None = None,
     ):
         self.headless = headless
         self.slow_mo = slow_mo
@@ -56,9 +52,9 @@ class BrowserEngine:
         self.user_data_dir = user_data_dir or str(BASE_DIR / ".browser_session")
 
         # Playwright объекты
-        self._playwright: Optional[Playwright] = None
-        self._browser: Optional[Browser] = None
-        self._context: Optional[BrowserContext] = None
+        self._playwright: Playwright | None = None
+        self._browser: Browser | None = None
+        self._context: BrowserContext | None = None
 
         # Флаг инициализации
         self._initialized = False
@@ -95,12 +91,17 @@ class BrowserEngine:
         # Загружаем сохранённую сессию
         storage_state = self._load_storage_state()
 
-        # Фиксированный user-agent — случайный ломает сессию (hh.ru привязывает к UA)
-        fixed_ua = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36"
+        # B.3: User-Agent Chrome 133+ (апрель 2026)
+        fixed_ua = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/133.0.0.0 Safari/537.36"
+
+        # B.4: Рандомизированный viewport
+        import random
+        viewports = [(1366, 768), (1440, 900), (1536, 864), (1920, 1080)]
+        vp = random.choice(viewports)
 
         # Создаём контекст
         self._context = await self._browser.new_context(
-            viewport={"width": 1920, "height": 1080},
+            viewport={"width": vp[0], "height": vp[1]},
             user_agent=fixed_ua,
             locale="ru-RU",
             timezone_id="Europe/Moscow",
@@ -145,13 +146,13 @@ class BrowserEngine:
         except Exception as e:
             logger.warning(f"Ошибка сохранения сессии: {e}")
 
-    def _load_storage_state(self) -> Optional[dict]:
+    def _load_storage_state(self) -> dict | None:
         """Загружает cookies и localStorage из файла."""
         storage_path = Path(self.user_data_dir) / "storage.json"
 
         if storage_path.exists():
             try:
-                with open(storage_path, "r", encoding="utf-8") as f:
+                with open(storage_path, encoding="utf-8") as f:
                     storage = json.load(f)
 
                 cookies = storage.get("cookies", [])
@@ -162,19 +163,6 @@ class BrowserEngine:
                 logger.warning(f"Ошибка загрузки сессии: {e}")
 
         return None
-
-    def _get_user_agent(self) -> str:
-        """Генерирует User-Agent."""
-        import random
-
-        user_agents = [
-            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36",
-            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
-            "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36",
-            "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36",
-        ]
-
-        return random.choice(user_agents)
 
     async def close(self):
         """Закрывает браузер с сохранением сессии."""
@@ -204,6 +192,6 @@ class BrowserEngine:
         return self._initialized and self._context is not None
 
     @property
-    def context(self) -> Optional[BrowserContext]:
+    def context(self) -> BrowserContext | None:
         """Возвращает контекст браузера."""
         return self._context

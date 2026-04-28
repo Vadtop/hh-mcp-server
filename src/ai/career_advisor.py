@@ -32,39 +32,33 @@ class CareerAdvisor:
     def __init__(self):
         # Карта навыков и примерных зарплатных бонусов
         self.skill_salary_bonuses = {
-            # High-demand skills
-            "kubernetes": 30000,
-            "docker": 25000,
-            "system design": 40000,
-            "microservices": 30000,
-            "aws": 35000,
-            "ci/cd": 20000,
-            "terraform": 25000,
-            "helm": 20000,
-            "kafka": 20000,
-            "redis": 15000,
-            "postgresql": 15000,
-            "mongodb": 15000,
-            "grpc": 15000,
-            "graphql": 10000,
-            "react": 20000,
-            "typescript": 15000,
-            "golang": 30000,
-            "rust": 35000,
-            "machine learning": 40000,
-            "devops": 25000,
+            "llm": 50000, "rag": 40000, "agents": 45000, "mcp": 35000,
+            "vector db": 30000, "langgraph": 25000, "pytorch": 35000,
+            "kubernetes": 35000, "docker": 25000, "system design": 50000,
+            "microservices": 35000, "aws": 40000, "ci/cd": 25000,
+            "terraform": 30000, "kafka": 30000, "redis": 20000,
+            "postgresql": 20000, "mongodb": 20000, "grpc": 20000,
+            "graphql": 15000, "react": 25000, "typescript": 20000,
+            "golang": 35000, "rust": 40000, "machine learning": 45000,
+            "devops": 35000, "mlops": 45000, "spark": 30000,
         }
         
         # Рекомендации по обучению
         self.learning_recommendations = {
+            "llm": "LLM Engineering: LangChain, prompt engineering, fine-tuning (2-3 месяца)",
+            "rag": "RAG-системы: векторные БД, реранкеры, guardrails (1-2 месяца)",
+            "agents": "AI Agents: LangGraph, CrewAI, AutoGen (2-3 месяца)",
+            "mcp": "MCP-протокол: FastMCP 2.x, tool integration (2 недели)",
+            "vector db": "Векторные БД: ChromaDB, Qdrant, Pinecone (2 недели)",
+            "langgraph": "LangGraph: stateful agents, DAG workflows (3 недели)",
+            "pytorch": "PyTorch: нейросети, fine-tuning, LoRA (2-3 месяца)",
             "kubernetes": "Изучить K8s: курсы Kubernetes Certified Administrator (3-4 недели)",
             "docker": "Освоить Docker: контейнеризация, docker-compose (2 недели)",
-            "system design": "Прочитать 'Designing Data-Intensive Applications' + курсы System Design (2-3 месяца)",
-            "microservices": "Практика микросервисов: pet-проект с API Gateway, Service Discovery (1-2 месяца)",
+            "system design": "Прочитать 'Designing Data-Intensive Applications' (2-3 месяца)",
+            "microservices": "Практика микросервисов: API Gateway, Service Discovery (1-2 месяца)",
             "aws": "AWS Certified Solutions Architect (2-3 месяца)",
             "ci/cd": "Настроить CI/CD pipeline: GitHub Actions, GitLab CI (1-2 недели)",
             "terraform": "Infrastructure as Code: Terraform курс (2 недели)",
-            "helm": "Helm charts для K8s (1 неделя)",
             "kafka": "Apache Kafka: основы и продвинутый уровень (3-4 недели)",
             "redis": "Redis: кэширование, очереди (1-2 недели)",
             "postgresql": "PostgreSQL: оптимизация запросов, индексы (2 недели)",
@@ -77,6 +71,8 @@ class CareerAdvisor:
             "rust": "Rust: ownership, async (3-4 месяца)",
             "machine learning": "ML: Python, scikit-learn, TensorFlow (3-6 месяцев)",
             "devops": "DevOps практика: CI/CD + K8s + мониторинг (2-3 месяца)",
+            "mlops": "MLOps: модельный деплой, мониторинг, feature store (2-3 месяца)",
+            "spark": "Apache Spark: distributed data processing (3-4 недели)",
         }
     
     def analyze_skills_gap(

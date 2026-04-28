@@ -32,8 +32,8 @@ class BrowserActions:
         """
         Переход на URL с анти-детект задержкой.
         """
-        await self.page.goto(url, wait_until=wait_until, timeout=60000)
-        await self.anti_detect.random_delay()
+        await self.page.goto(url, wait_until=wait_until, timeout=20000)
+        await self.anti_detect.random_delay(0.1, 0.3)
 
     async def scroll_to_bottom(self):
         """

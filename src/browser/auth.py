@@ -13,8 +13,8 @@
 """
 
 import logging
-from typing import Optional
-from playwright.async_api import Page, TimeoutError as PlaywrightTimeout
+
+from playwright.async_api import TimeoutError as PlaywrightTimeout
 
 from src.browser.engine import BrowserEngine
 
@@ -30,42 +30,63 @@ class HHAuth:
     - Проверку текущей сессии
     - Повторную авторизацию при истечении сессии
     """
-    
+
     def __init__(self, browser: BrowserEngine):
         self.browser = browser
-        self._phone: Optional[str] = None
+        self._phone: str | None = None
         self._is_authenticated = False
-    
+
     async def check_auth(self) -> bool:
         """
         Проверяет авторизован ли пользователь.
-        
-        Returns:
-            True если авторизован
+
+        A.5: Расширенные селекторы + cookie-based check.
         """
         page = await self.browser.new_page()
-        
+
         try:
-            # domcontentloaded быстрее чем networkidle — hh.ru держит соединения
             await page.goto("https://hh.ru", wait_until="domcontentloaded", timeout=30000)
-            await page.wait_for_timeout(2000)
+            await page.wait_for_load_state("networkidle", timeout=10000)
 
-            # Кнопка "Войти" — не авторизован
-            login_button = page.locator('[data-qa="header-login-button"], [data-qa="header-login"]')
-            if await login_button.count() > 0:
-                self._is_authenticated = False
-                return False
+            # Cookie-based check — самый надёжный признак
+            cookies = await page.context.cookies("https://hh.ru")
+            for cookie in cookies:
+                if cookie["name"] == "hhtoken" and len(cookie.get("value", "")) > 20:
+                    self._is_authenticated = True
+                    logger.info("Сессия активна (cookie hhtoken)")
+                    return True
 
-            # Имя пользователя в хедере — авторизован
-            user_name = page.locator('[data-qa="header-user-name"], [data-qa="user-name"]')
-            if await user_name.count() > 0:
-                self._is_authenticated = True
-                logger.info("Сессия активна")
-                return True
+            # Не авторизован — расширенные селекторы 2026
+            login_selectors = [
+                '[data-qa="head-applicant-button"]',
+                '[data-qa="mainmenu_authPage"]',
+                'a[href*="/account/login"]',
+                '[data-qa="header-login-button"]',
+                '[data-qa="header-login"]',
+            ]
+            for sel in login_selectors:
+                loc = page.locator(sel)
+                if await loc.count() > 0:
+                    self._is_authenticated = False
+                    return False
+
+            # Авторизован — расширенные селекторы 2026
+            auth_selectors = [
+                '[data-qa="user-account__menu"]',
+                '[data-qa="userBlockButton-loggedIn"]',
+                '[data-qa="header-user-name"]',
+                '[data-qa="user-name"]',
+            ]
+            for sel in auth_selectors:
+                loc = page.locator(sel)
+                if await loc.count() > 0:
+                    self._is_authenticated = True
+                    logger.info("Сессия активна")
+                    return True
 
             # Fallback — переход на /applicant/resumes
             await page.goto("https://hh.ru/applicant/resumes", wait_until="domcontentloaded", timeout=30000)
-            await page.wait_for_timeout(1500)
+            await page.wait_for_load_state("networkidle", timeout=10000)
 
             if "login" in page.url or "account/login" in page.url:
                 self._is_authenticated = False
@@ -74,14 +95,14 @@ class HHAuth:
             self._is_authenticated = True
             return True
 
-        except PlaywrightTimeout:
-            logger.warning("Таймаут при проверке авторизации")
+        except Exception as e:
+            logger.warning(f"Ошибка при проверке авторизации: {e}")
             self._is_authenticated = False
             return False
         finally:
             await page.close()
-    
-    async def authenticate(self, phone: Optional[str] = None) -> bool:
+
+    async def authenticate(self, phone: str | None = None) -> bool:
         """
         Выполняет интерактивную авторизацию.
         
@@ -92,7 +113,7 @@ class HHAuth:
             True если авторизация успешна
         """
         page = await self.browser.new_page()
-        
+
         try:
             logger.info("Переход на страницу входа...")
             await page.goto("https://hh.ru/account/login", wait_until="domcontentloaded", timeout=30000)
@@ -220,47 +241,56 @@ class HHAuth:
             return False
         finally:
             await page.close()
-    
-    async def ensure_authenticated(self) -> bool:
+
+    async def ensure_authenticated(self, allow_interactive: bool = False) -> bool:
         """
         Гарантирует авторизацию.
-        Если сессия истекла — запускает интерактивную авторизацию.
-        
+
+        A.6: Внутри MCP (allow_interactive=False) — НЕ вызывает authenticate(),
+        т.к. input() убьёт event loop.
+
         Returns:
             True если авторизован
         """
+        if self._is_authenticated:
+            return True
+
         if await self.check_auth():
             return True
-        
+
+        if not allow_interactive:
+            logger.error("Сессия истекла — MCP не может запросить SMS. Запустите auth_once.py")
+            return False
+
         return await self.authenticate()
-    
+
     async def logout(self):
         """Выход из аккаунта."""
         page = await self.browser.new_page()
-        
+
         try:
             await page.goto("https://hh.ru", wait_until="domcontentloaded", timeout=60000)
-            
+
             # Находим меню пользователя и кнопку выхода
             logout_link = page.locator('[data-qa="header-logout"]')
-            
+
             if await logout_link.count() > 0:
                 await logout_link.click()
                 logger.info("👋 Выход выполнен")
-            
+
             self._is_authenticated = False
             await self.browser.save_session()
-            
+
         except Exception as e:
             logger.error(f"Ошибка при выходе: {e}")
         finally:
             await page.close()
-    
+
     @property
-    def phone(self) -> Optional[str]:
+    def phone(self) -> str | None:
         """Возвращает номер телефона."""
         return self._phone
-    
+
     @property
     def is_authenticated(self) -> bool:
         """Проверяет статус авторизации."""

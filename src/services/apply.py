@@ -9,14 +9,22 @@
 """
 
 import logging
-from typing import Optional
+import re
 
-from src.browser.engine import BrowserEngine
-from src.browser.auth import HHAuth
-from src.browser.parsers import NegotiationParser
 from src.browser.actions import BrowserActions
+from src.browser.auth import HHAuth
+from src.browser.engine import BrowserEngine
+from src.browser.parsers import NegotiationParser
+from src.browser.safe_page import safe_page
+from src.services.applied_db import check_daily_limit, is_applied, mark_applied
 
 logger = logging.getLogger(__name__)
+
+
+def _validate_vacancy_id(vid: str) -> str:
+    if not re.match(r"^\d{6,12}$", vid or ""):
+        raise ValueError(f"Невалидный vacancy_id: {vid!r}")
+    return vid
 
 
 class ApplyService:
@@ -24,180 +32,149 @@ class ApplyService:
     Сервис откликов через Playwright.
     """
 
-    def __init__(self, browser: BrowserEngine):
+    def __init__(self, browser: BrowserEngine, auth: HHAuth):
         self.browser = browser
-        self.auth = HHAuth(browser)
+        self.auth = auth
 
     async def apply(
         self,
         vacancy_id: str,
-        cover_letter: Optional[str] = None,
+        cover_letter: str | None = None,
     ) -> dict:
         """
         Откликается на вакансию.
 
-        Args:
-            vacancy_id: ID вакансии
-            cover_letter: Сопроводительное письмо
-
-        Returns:
-            dict с результатом отклика
+        A.3: Правильная логика:
+        1. Идём на страницу вакансии.
+        2. Если есть форма с textarea для письма — заполняем и сабмитим.
+        3. Если формы нет — кликаем кнопку отклика без письма.
+        4. Возвращаем letter_attached: bool.
         """
-        if not await self.auth.ensure_authenticated():
-            return {"error": "Не удалось авторизоваться"}
-
-        page_obj = await self.browser.new_page()
-        actions = BrowserActions(page_obj)
-
         try:
-            url = f"https://hh.ru/vacancy/{vacancy_id}"
-            await actions.goto(url)
+            _validate_vacancy_id(vacancy_id)
+        except ValueError as e:
+            return {"error": str(e)}
 
-            # Сначала кликаем кнопку отклика
-            result = await actions.click_apply_button()
+        if is_applied(vacancy_id):
+            return {"error": "already_applied", "message": "Вы уже откликались на эту вакансию"}
 
-            # Если отклик сразу прошёл (без письма) — пробуем добавить письмо
-            if result.get("success") and cover_letter:
-                # Отклик уже отправлен без письма — на hh.ru можно добавить письмо
-                # в переписке. Открываем страницу отклика
-                logger.info(
-                    f"Отклик отправлен, добавляем письмо к вакансии {vacancy_id}"
+        if not check_daily_limit():
+            return {"error": "daily_limit_reached", "message": "Дневной лимит откликов исчерпан"}
+
+        if not await self.auth.ensure_authenticated():
+            return {"error": "Сессия hh.ru истекла. Запустите `python auth_once.py` для повторного входа."}
+
+        async with safe_page(self.browser) as page_obj:
+            actions = BrowserActions(page_obj)
+
+            try:
+                url = f"https://hh.ru/vacancy/{vacancy_id}"
+                await actions.goto(url)
+
+                # A.3: Сначала проверяем, есть ли форма для письма ДО отклика
+                letter_textarea = page_obj.locator(
+                    'textarea[data-qa="vacancy-cover-letter-textarea"], '
+                    'textarea[name="cover_letter"], '
+                    'textarea.bloko-textarea'
                 )
-                letter_page = await self.browser.new_page()
-                try:
-                    await letter_page.goto(
-                        f"https://hh.ru/applicant/negotiations/vacancy/{vacancy_id}",
-                        wait_until="domcontentloaded",
-                        timeout=30000,
-                    )
-                    await letter_page.wait_for_timeout(2000)
 
-                    # Ищем кнопку "Написать" / "Прикрепить письмо"
-                    write_selectors = [
-                        'a:has-text("Написать")',
-                        'button:has-text("Написать")',
-                        'a:has-text("Написать письмо")',
-                        '[data-qa*="write-message"]',
-                        '[data-qa*="add-letter"]',
-                    ]
-                    for sel in write_selectors:
-                        loc = letter_page.locator(sel)
-                        if await loc.count() > 0:
-                            await loc.first.click()
-                            await letter_page.wait_for_timeout(1000)
+                if await letter_textarea.count() > 0 and cover_letter:
+                    # Форма есть — заполняем письмо и сабмитим
+                    await letter_textarea.first.fill(cover_letter)
+                    await page_obj.wait_for_timeout(500)
 
-                            # Ищем textarea для письма
-                            textarea = letter_page.locator("textarea").first
-                            if await textarea.count() > 0:
-                                await textarea.fill(cover_letter)
-                                await letter_page.wait_for_timeout(500)
+                    # Кликаем кнопку отклика (она же отправит форму с письмом)
+                    result = await actions.click_apply_button()
 
-                                # Кнопка отправки
-                                send_btn = letter_page.locator(
-                                    'button:has-text("Отправить"), '
-                                    'button:has-text("Написать"), '
-                                    '[data-qa*="send"], '
-                                    '[data-qa*="submit"]'
-                                ).first
-                                if await send_btn.count() > 0:
-                                    await send_btn.click()
-                                    await letter_page.wait_for_timeout(2000)
-                                    logger.info("Письмо добавлено к отклику")
+                    if result.get("success"):
+                        mark_applied(vacancy_id, letter=cover_letter is not None)
+                        return {
+                            "success": True,
+                            "message": "Отклик с письмом отправлен",
+                            "vacancy_id": vacancy_id,
+                            "letter_attached": True,
+                        }
+                    elif result.get("needs_letter"):
+                        return {"error": "Не удалось отправить письмо через формы"}
+                    else:
+                        return {"error": result.get("error", "Не удалось откликнуться")}
 
-                            break
-                except Exception as e:
-                    logger.warning(f"Не удалось добавить письмо: {e}")
-                finally:
-                    await letter_page.close()
+                # Формы для письма нет — кликаем отклик сразу
+                result = await actions.click_apply_button()
 
-                return {
-                    "success": True,
-                    "message": "Отклик отправлен"
-                    + (" с письмом" if cover_letter else ""),
-                    "vacancy_id": vacancy_id,
-                }
-
-            if result.get("success"):
-                return {
-                    "success": True,
-                    "message": "Отклик отправлен!",
-                    "vacancy_id": vacancy_id,
-                }
-
-            elif result.get("needs_letter") and cover_letter:
-                letter_success = await actions.fill_cover_letter(cover_letter)
-                if letter_success:
+                if result.get("success"):
+                    mark_applied(vacancy_id, letter=False)
                     return {
                         "success": True,
-                        "message": "Отклик с письмом отправлен!",
+                        "message": "Отклик отправлен (без письма)",
                         "vacancy_id": vacancy_id,
+                        "letter_attached": False,
                     }
+
+                elif result.get("needs_letter") and cover_letter:
+                    # После клика появилась форма — заполняем
+                    letter_success = await actions.fill_cover_letter(cover_letter)
+                    if letter_success:
+                        return {
+                            "success": True,
+                            "message": "Отклик с письмом отправлен",
+                            "vacancy_id": vacancy_id,
+                            "letter_attached": True,
+                        }
+                    else:
+                        return {"error": "Не удалось отправить письмо"}
+
+                elif result.get("needs_letter") and not cover_letter:
+                    return {
+                        "error": "Вакансия требует сопроводительное письмо",
+                        "needs_letter": True,
+                    }
+
+                elif result.get("has_questions"):
+                    return {
+                        "error": "Вакансия имеет вопросы — требуется ручное заполнение",
+                        "has_questions": True,
+                    }
+
                 else:
-                    return {"error": "Не удалось отправить письмо"}
+                    return {"error": result.get("error", "Неизвестная ошибка")}
 
-            elif result.get("needs_letter") and not cover_letter:
-                return {
-                    "error": "Вакансия требует сопроводительное письмо",
-                    "needs_letter": True,
-                }
-
-            elif result.get("has_questions"):
-                return {
-                    "error": "Вакансия имеет вопросы — требуется ручное заполнение",
-                    "has_questions": True,
-                }
-
-            else:
-                return {"error": result.get("error", "Неизвестная ошибка")}
-
-        except Exception as e:
-            logger.error(f"Ошибка отклика: {e}")
-            return {"error": str(e)}
-        finally:
-            await page_obj.close()
+            except Exception as e:
+                logger.error(f"Ошибка отклика: {e}")
+                return {"error": str(e)}
 
     async def get_applications(self) -> list[dict]:
         """
         Получает историю откликов.
-
-        Returns:
-            Список откликов
         """
         if not await self.auth.ensure_authenticated():
             return []
 
-        page_obj = await self.browser.new_page()
-
-        try:
-            return await NegotiationParser.parse_applications(page_obj)
-        except Exception as e:
-            logger.error(f"Ошибка получения откликов: {e}")
-            return []
-        finally:
-            await page_obj.close()
+        async with safe_page(self.browser) as page_obj:
+            try:
+                return await NegotiationParser.parse_applications(page_obj)
+            except Exception as e:
+                logger.error(f"Ошибка получения откликов: {e}")
+                return []
 
     async def check_application_status(self, vacancy_id: str) -> dict:
         """
         Проверяет статус конкретного отклика.
-
-        Args:
-            vacancy_id: ID вакансии
-
-        Returns:
-            dict со статусом
         """
-        if not await self.auth.ensure_authenticated():
-            return {"error": "Не удалось авторизоваться"}
-
-        page_obj = await self.browser.new_page()
-
         try:
-            url = f"https://hh.ru/applicant/negotiations/vacancy/{vacancy_id}"
-            await page_obj.goto(url, wait_until="domcontentloaded", timeout=60000)
-
-            return await NegotiationParser.parse_application_status(page_obj)
-        except Exception as e:
-            logger.error(f"Ошибка проверки статуса: {e}")
+            _validate_vacancy_id(vacancy_id)
+        except ValueError as e:
             return {"error": str(e)}
-        finally:
-            await page_obj.close()
+
+        if not await self.auth.ensure_authenticated():
+            return {"error": "Сессия hh.ru истекла. Запустите `python auth_once.py` для повторного входа."}
+
+        async with safe_page(self.browser) as page_obj:
+            try:
+                url = f"https://hh.ru/applicant/negotiations/vacancy/{vacancy_id}"
+                await page_obj.goto(url, wait_until="domcontentloaded", timeout=60000)
+
+                return await NegotiationParser.parse_application_status(page_obj)
+            except Exception as e:
+                logger.error(f"Ошибка проверки статуса: {e}")
+                return {"error": str(e)}

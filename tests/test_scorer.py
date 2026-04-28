@@ -15,7 +15,7 @@ def test_parse_salary_range():
 
 def test_parse_salary_single():
     from_amt, to_amt = _parse_salary_string("150 000 ₽")
-    assert from_amt is None
+    assert from_amt == 150000
     assert to_amt == 150000
 
 

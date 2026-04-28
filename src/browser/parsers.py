@@ -28,7 +28,14 @@ class VacancyParser:
         vacancies = []
 
         try:
-            await page.wait_for_timeout(2000)
+            # Ждём появления карточек вместо фиксированной паузы
+            try:
+                await page.wait_for_selector(
+                    '[data-qa="vacancy-serp__vacancy"], [data-qa="search-result-item"]',
+                    timeout=10000
+                )
+            except Exception:
+                pass
 
             # Актуальные селекторы hh.ru 2025-2026
             card_selectors = [
@@ -216,7 +223,10 @@ class VacancyParser:
         Парсит детальную страницу вакансии.
         """
         try:
-            await page.wait_for_timeout(2000)
+            try:
+                await page.wait_for_selector('[data-qa="vacancy-title"]', timeout=8000)
+            except Exception:
+                pass
 
             # Название
             title_el = page.locator('[data-qa="vacancy-title"]')

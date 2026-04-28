@@ -8,9 +8,10 @@
 - Обработка капчи
 """
 
-import random
 import asyncio
 import logging
+import random
+
 from playwright.async_api import Page
 
 logger = logging.getLogger(__name__)
@@ -22,9 +23,9 @@ class AntiDetect:
     """
 
     @staticmethod
-    async def random_delay(min_sec: float = 0.3, max_sec: float = 1.0):
+    async def random_delay(min_sec: float = 1.5, max_sec: float = 4.0):
         """
-        Рандомная пауза между действиями.
+        Рандомная пауза между действиями. B.2: увеличены для антибота 2026.
         """
         delay = random.uniform(min_sec, max_sec)
         await asyncio.sleep(delay)

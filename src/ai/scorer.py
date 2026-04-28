@@ -9,14 +9,12 @@ AI-модуль для скоринга вакансий.
 """
 
 import re
-from typing import Optional
-from collections import Counter
 
 from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.metrics.pairwise import cosine_similarity
 
+from src.config import MY_EXPECTED_SALARY, MY_RESUME_TEXT, MY_SKILLS, SCORING_WEIGHTS
 from src.models.vacancy import VacancyDetail, VacancyScored
-from src.config import SCORING_WEIGHTS, MY_SKILLS, MY_RESUME_TEXT, MY_EXPECTED_SALARY
 
 
 class AIVacancyScorer:
@@ -41,7 +39,7 @@ class AIVacancyScorer:
     def score_vacancy(
         self,
         vacancy: dict,
-        expected_salary: Optional[int] = None,
+        expected_salary: int | None = None,
     ) -> "VacancyScoredSimple":
         """
         Скоринг вакансии под MY_PROFILE (без резюме объекта).
@@ -118,8 +116,8 @@ class AIVacancyScorer:
         vacancy: VacancyDetail,
         resume_text: str,
         resume_skills: list[str],
-        expected_salary: Optional[int] = None,
-        preferred_area: Optional[str] = None,
+        expected_salary: int | None = None,
+        preferred_area: str | None = None,
     ) -> VacancyScored:
         """
         Оценивает вакансию на основе резюме.
@@ -190,8 +188,8 @@ class AIVacancyScorer:
         vacancies: list[VacancyDetail],
         resume_text: str,
         resume_skills: list[str],
-        expected_salary: Optional[int] = None,
-        preferred_area: Optional[str] = None,
+        expected_salary: int | None = None,
+        preferred_area: str | None = None,
     ) -> list[VacancyScored]:
         """
         Оценивает пакет вакансий и сортирует по релевантности.
@@ -289,9 +287,9 @@ class AIVacancyScorer:
 
     def _calculate_salary_score(
         self,
-        expected: Optional[int],
-        from_amount: Optional[int],
-        to_amount: Optional[int],
+        expected: int | None,
+        from_amount: int | None,
+        to_amount: int | None,
     ) -> float:
         """Рассчитывает скоринг зарплаты."""
         if not expected or (not from_amount and not to_amount):
@@ -325,8 +323,8 @@ class AIVacancyScorer:
 
     def _calculate_location_score(
         self,
-        preferred: Optional[str],
-        actual: Optional[str],
+        preferred: str | None,
+        actual: str | None,
     ) -> float:
         """Рассчитывает скоринг локации."""
         if not preferred or not actual:
@@ -373,7 +371,7 @@ class VacancyScoredSimple:
         self.score_details = score_details
 
 
-def _parse_salary_string(salary_str: str) -> tuple[Optional[int], Optional[int]]:
+def _parse_salary_string(salary_str: str) -> tuple[int | None, int | None]:
     """
     Парсит строку зарплаты вида 'от 100 000 до 200 000 ₽' или '150 000 ₽'.
 
@@ -396,9 +394,12 @@ def _parse_salary_string(salary_str: str) -> tuple[Optional[int], Optional[int]]
     if len(cleaned) == 0:
         return None, None
     elif len(cleaned) == 1:
-        if "от" in salary_str:
+        sl = salary_str.lower()
+        if "от" in sl:
             return cleaned[0], None
-        else:
+        elif "до" in sl:
             return None, cleaned[0]
+        else:
+            return cleaned[0], cleaned[0]
     else:
         return cleaned[0], cleaned[1]
